@@ -1,0 +1,5 @@
+config CAN_INTREPID
+	depends on UIO
+	tristate "Intrepid Control Systems CAN devices"
+	---help---
+	  Support for CAN devices from Intrepid Control Systems such as the ValueCAN and neoVI line of products
