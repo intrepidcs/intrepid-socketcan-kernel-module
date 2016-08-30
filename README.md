@@ -3,7 +3,7 @@ This is the kernel object portion of Intrepid Control Systems' SocketCAN support
 First, build the KO.
 
 ```
-$ sudo make
+$ make
 ```
 
 The resulting file will be ```intrepid.ko```. This module depends on ```can```, ```can_dev```, and ```can_raw``` (which should already be a part of your system). Before you can load the module, make sure these modules are loaded, then ```insmod``` can be used to load it.
