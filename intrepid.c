@@ -47,6 +47,7 @@
 #include <linux/can/error.h>
 #include <linux/wait.h>
 #include <linux/poll.h>
+#include <linux/version.h>
 
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_VERSION "1.0"
@@ -301,7 +302,12 @@ static int intrepid_add_if(struct intrepid_netdevice** result)
         dev->base_addr          = i;
         dev->flags             |= IFF_ECHO;
         dev->netdev_ops         = &intrepid_netdevice_ops;
-        dev->destructor         = intrepid_netdevice_free;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,9)
+        dev->destructor    = intrepid_netdevice_free;
+#else
+        dev->needs_free_netdev  = true;
+        dev->priv_destructor    = intrepid_netdevice_free;
+#endif
         ics                     = netdev_priv(dev);
         ics->dev                = dev;
         ics->is_stopped         = 0;
@@ -488,8 +494,15 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 }
 
 /* when the mmap()ed pages are first accesed by usermode there will be a page fault.
- * here we simply linerally map in the big vmalloc() we got */
-static int intrepid_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+ * here we simply linerally map in the big vmalloc() we got.
+ *
+ * Starting in kernel version 4.11, (struct vm_operations_struct *)->fault() no
+ * longer takes the vma parameter (since it resides in vmf) */
+static int intrepid_vm_fault(
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
+        struct vm_area_struct *vma,
+#endif
+        struct vm_fault *vmf)
 {
         vmf->page = vmalloc_to_page(shared_mem + (vmf->pgoff << PAGE_SHIFT));
         get_page(vmf->page); /* increment reference count, very important */
@@ -721,7 +734,13 @@ static __exit void intrepid_exit(void)
         {
                 if (net_devices[i] != NULL)
                 {
+                    // Kernel version 4.11.9 changed the destructor function to
+                    // priv_destructor
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,9)
                         net_devices[i]->destructor = NULL; /* no dangling callbacks */
+#else
+                        net_devices[i]->priv_destructor = NULL;
+#endif
                         intrepid_remove_if(i);
                 }
         }
