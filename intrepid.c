@@ -1,7 +1,7 @@
 /*
  * intrepid.c - Netdevice driver for Intrepid CAN/Ethernet devices
  *
- * Copyright (c) 2016 Intrepid Control Systems, Inc.
+ * Copyright (c) 2016-2019 Intrepid Control Systems, Inc.
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -49,162 +49,213 @@
 #include <linux/poll.h>
 #include <linux/version.h>
 
+#include "neomessage.h"
+
+#define str_first(x) #x
+#define str(x) str_first(x)
+
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
-#define KO_VERSION "1.0"
+#define KO_MAJOR 2
+#define KO_MINOR 0
+#define KO_PATCH 0
+#define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
+#define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
+
+#define VER_MAJ_FROM_INT(VERINT) ((VERINT >> 16) & 0xFF)
+#define VER_MIN_FROM_INT(VERINT) ((VERINT >> 8) & 0xFF)
+#define VER_PATCH_FROM_INT(VERINT) (VERINT & 0xFF)
 
 MODULE_DESCRIPTION(KO_DESC);
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Paul Hollinsky <phollinsky@intrepidcs.com>");
 MODULE_AUTHOR("Jeffrey Quesnelle <jeffq@intrepidcs.com>");
 MODULE_VERSION(KO_VERSION);
 
 #define INTREPID_DEVICE_NAME            "intrepid_netdevice"
 #define INTREPID_CLASS_NAME             "intrepid"
 #define MAX_NET_DEVICES                 16
-#define SHARED_MEM_SIZE                 0x100000
+#define SHARED_MEM_SIZE                 0x400000
 
 #define SIOCSADDIF                      0x3001
 #define SIOCSREMOVEIF                   0x3002
 #define SIOCGSHAREDMEMSIZE              0x3003
 #define SIOCSMSGSWRITTEN                0x3004
 #define SIOCGMAXIFACES                  0x3005
+#define SIOCGVERSION                    0x3006
+#define SIOCGCLIENTVEROK                0x3007
 
-#define SPY_STATUS_GLOBAL_ERR           0x01
-#define SPY_STATUS_TX_MSG               0x02
-#define SPY_STATUS_XTD_FRAME            0x04
-#define SPY_STATUS_REMOTE_FRAME         0x08
-#define SPY_STATUS_LOST_ARBITRATION     0x80
-#define SPY_STATUS_BUS_SHORTED_PLUS     0x800
-#define SPY_STATUS_VSI_TX_UNDERRUN      0x8000000
-
-
-struct icsSpyMessage {
-    unsigned int   StatusBitField;
-    unsigned int   StatusBitField2;
-    unsigned int   TimeHardware;
-    unsigned int   TimeHardware2;
-    unsigned int   TimeSystem;
-    unsigned int   TimeSystem2;
-    unsigned char  TimeStampHardwareID;
-    unsigned char  TimeStampSystemID;
-    unsigned char  NetworkID;
-    unsigned char  NodeID;
-    unsigned char  Protocol;
-    unsigned char  MessagePieceID;
-    unsigned char  ExtraDataPtrEnabled;
-    unsigned char  NumberBytesHeader;
-    unsigned char  NumberBytesData;
-    unsigned char  NetworkID2;
-    unsigned short DescriptionID;
-    unsigned int   ArbIDOrHeader;
-    unsigned char  Data[8];
-    union
-    {
-        struct
-        {
-            unsigned int StatusBitField3;
-            unsigned int StatusBitField4;
-        };
-        unsigned char  AckBytes[8];
-    };
-    void*          ExtraDataPtr;
-    unsigned char  MiscData;
-    unsigned char  Reserved[3];
-}  icsSpyMessage;
+/* This is true until we have Ethernet support
+ * It is used to stop the netif queues before we have to return NETDEV_TX_BUSY
+ */
+#define MAX_MTU                         CANFD_MTU
 
 struct intrepid_pending_tx_info {
-        int tx_box_index;
-        int count;
+	int tx_box_index;
+	int count;
+	size_t bytes;
 };
 
 struct intrepid_netdevice {
-        struct can_priv         can;
+	struct can_priv         can;
 	struct can_berr_counter bec;
-        struct net_device       *dev;
-        spinlock_t              lock;
-        int                     is_stopped;
-        unsigned char           *from_user;
+	struct net_device       *dev;
+	spinlock_t              lock;
+	int                     is_stopped;
+	unsigned char           *from_user;
 };
 
 static int                      is_open;
 static int                      major_number;
-static int                      current_tx_box;
-static int                      tx_box_count[2];
 static unsigned char            *shared_mem;
-static unsigned char            *tx_boxes[2];
 static struct class             *intrepid_dev_class;
 static struct device            *intrepid_dev;
 static struct net_device        **net_devices;
 static struct mutex             ioctl_mutex;
-static spinlock_t               tx_box_lock;
-static wait_queue_head_t        tx_wait;
 
-#define RX_BOX_SIZE                (SHARED_MEM_SIZE / (MAX_NET_DEVICES * 2))
-#define TX_BOX_SIZE                (SHARED_MEM_SIZE / 4)
-#define GET_RX_BOX(DEVICE_INDEX)   (shared_mem + (RX_BOX_SIZE * DEVICE_INDEX))
-#define GET_TX_BOX(INDEX)          (shared_mem + (SHARED_MEM_SIZE / 2) + (INDEX * TX_BOX_SIZE))
-#define MAX_NUM_RX_MSGS            (RX_BOX_SIZE / sizeof(struct icsSpyMessage))
-#define MAX_NUM_TX_MSGS            (TX_BOX_SIZE / sizeof(struct icsSpyMessage))
+static wait_queue_head_t        tx_wait;
+static unsigned char            *tx_boxes[2];
+static int                      current_tx_box;
+static int                      tx_box_count[2];
+static size_t                   tx_box_bytes[2];
+static spinlock_t               tx_box_lock;
+
+#define RX_BOX_SIZE (SHARED_MEM_SIZE / (MAX_NET_DEVICES * 2))
+#define TX_BOX_SIZE (SHARED_MEM_SIZE / 4)
+#define GET_RX_BOX(DEVICE_INDEX) \
+	(shared_mem + (RX_BOX_SIZE * DEVICE_INDEX))
+#define GET_TX_BOX(BOX_INDEX) \
+	(shared_mem + (SHARED_MEM_SIZE / 2) + (BOX_INDEX * TX_BOX_SIZE))
+
+/* Returns 1 when we would not have enough space to hold another message of `size` */
+static inline int intrepid_tx_box_no_space_for(size_t size)
+{
+	return (tx_box_bytes[current_tx_box] + size >= TX_BOX_SIZE - 1);
+}
+
+static void intrepid_unpause_all_queues(void)
+{
+	int i;
+	for(i = 0; i < MAX_NET_DEVICES; ++i) {
+		struct net_device *dev = net_devices[i];
+		struct intrepid_netdevice *ics;
+		if (dev == NULL)
+			continue;
+
+		ics = netdev_priv(dev);
+		if (ics->is_stopped) {
+			spin_lock_bh(&ics->lock);
+			netif_wake_queue(dev);
+			ics->is_stopped = 0;
+			spin_unlock_bh(&ics->lock);
+		}
+	}
+}
+
+static void intrepid_pause_all_queues(void)
+{
+	int i;
+	for(i = 0; i < MAX_NET_DEVICES; ++i) {
+		struct net_device *dev = net_devices[i];
+		struct intrepid_netdevice *ics;
+		if (dev == NULL)
+			continue;
+
+		ics = netdev_priv(dev);
+		if (!ics->is_stopped) {
+			spin_lock_bh(&ics->lock);
+			ics->is_stopped = 1;
+			netif_stop_queue(dev);
+			spin_unlock_bh(&ics->lock);
+		}
+	}
+}
 
 static netdev_tx_t intrepid_netdevice_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-        struct net_device_stats *stats = &dev->stats;
-        struct intrepid_netdevice *ics = netdev_priv(dev);
-        struct can_frame           *cf = (struct can_frame *)skb->data;
-        struct icsSpyMessage       msg = {0};
-        struct icsSpyMessage      *box;
+	int ret = NETDEV_TX_OK;
+	struct net_device_stats *stats = &dev->stats;
+	struct intrepid_netdevice *ics = netdev_priv(dev);
+	struct canfd_frame *cf = (struct canfd_frame*)skb->data;
+	bool fd = can_is_canfd_skb(skb);
+	bool needs_unlock = false;
+	neomessage_can_t msg = {0};
 
-        stats->tx_packets++;
-        stats->tx_bytes = get_can_dlc(cf->can_dlc);
+	stats->tx_packets++;
+	stats->tx_bytes = cf->len;
 
-        if (can_dropped_invalid_skb(dev, skb))
-        {
-                pr_info("intrepid: dropping invalid frame on %s\n", dev->name);
-                return NETDEV_TX_OK;
-        }
+	if (can_dropped_invalid_skb(dev, skb)) {
+		pr_info("intrepid: dropping invalid frame on %s\n", dev->name);
+		goto exit;
+	}
 
-        /* convert the can_frame to an icsSpyMessage */
+	spin_lock_bh(&tx_box_lock);
+	needs_unlock = true;
 
-        if (cf->can_id & CAN_EFF_FLAG)
-        {
-                msg.ArbIDOrHeader   = cf->can_id & CAN_EFF_MASK;
-                msg.StatusBitField  = SPY_STATUS_XTD_FRAME;
-        }
-        else
-                msg.ArbIDOrHeader   = cf->can_id & CAN_SFF_MASK;
+	if (unlikely(ics->is_stopped)) {
+		pr_err("intrepid: in xmit but device is stopped\n");
+		if (intrepid_tx_box_no_space_for(sizeof(neomessage_can_t) + MAX_MTU)) {
+			ret = NETDEV_TX_BUSY;
+			goto exit;
+		}
+		pr_warn("intrepid: device should not have been stopped, waking all\n");
+		intrepid_unpause_all_queues();
+	}
 
-        if (cf->can_id & CAN_RTR_FLAG)
-                msg.StatusBitField |= SPY_STATUS_XTD_FRAME;
-        else
-        {
-                msg.NumberBytesData = get_can_dlc(cf->can_dlc); /* is can_dlc sanitizied already? */
-                memcpy(msg.Data, cf->data, msg.NumberBytesData);
-        }
+	/* convert the canfd_frame to a neomessage_can_t */
+	if (cf->can_id & CAN_EFF_FLAG) {
+		msg.arbid = cf->can_id & CAN_EFF_MASK;
+		msg.status.extendedFrame = true;
+	} else {
+		msg.arbid = cf->can_id & CAN_SFF_MASK;
+	}
 
-        msg.NumberBytesHeader = 2;
-        msg.NetworkID = dev->base_addr;
+	if (fd) {
+		msg.status.canfdFDF = true;
+		if (cf->flags & CANFD_BRS)
+			msg.status.canfdBRS = true;
+		if (cf->flags & CANFD_ESI)
+			msg.status.canfdESI = true;
+	}
 
-        /* copy the message over into the usermode box. if this message fills up the box,
-         * turn of the queue until the user reads it out */
+	if (cf->can_id & CAN_RTR_FLAG) {
+		if (unlikely(fd)) {
+			pr_info("intrepid: tried to send RTR frame on CANFD %s\n", dev->name);
+			goto exit;
+		}
 
-        spin_lock_bh(&tx_box_lock);
+		msg.status.remoteFrame = true;
+	}
 
-        box = (struct icsSpyMessage*)tx_boxes[current_tx_box];
-        memcpy(box + tx_box_count[current_tx_box], &msg, sizeof(struct icsSpyMessage));
+	msg.length = cf->len;
+	msg.netid = dev->base_addr;
 
-        if (++tx_box_count[current_tx_box] == MAX_NUM_TX_MSGS)
-        {
-                spin_lock_bh(&ics->lock);
-                ics->is_stopped = 1;
-                netif_stop_queue(dev);
-                spin_unlock_bh(&ics->lock);
-        }
+	if (intrepid_tx_box_no_space_for(sizeof(neomessage_can_t) + msg.length)) {
+		/* This should never happen, the queue should be paused before this */
+		ssize_t offset = TX_BOX_SIZE;
+		offset -= (tx_box_bytes[current_tx_box] + sizeof(neomessage_can_t) + msg.length);
+		pr_err("intrepid: %ld length message caused NETDEV_TX_BUSY (%ld)\n", msg.length, offset);
+		ret = NETDEV_TX_BUSY;
+		goto exit;
+	}
 
-        spin_unlock_bh(&tx_box_lock);
+	/* Copy the message into the usermode box */
+	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], &msg, sizeof(neomessage_can_t));
+	tx_box_bytes[current_tx_box] += sizeof(neomessage_can_t);
+	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], cf->data, msg.length);
+	tx_box_bytes[current_tx_box] += msg.length;
+	tx_box_count[current_tx_box]++;
 
-        wake_up_interruptible(&tx_wait);
+	/* If we might not be able to fit the next message, let's lock until we can to prevent NETDEV_TX_BUSY */
+	if (intrepid_tx_box_no_space_for(sizeof(neomessage_can_t) + MAX_MTU))
+		intrepid_pause_all_queues();
 
-        consume_skb(skb);
-	return NETDEV_TX_OK;
+exit:
+	if(ret == NETDEV_TX_OK)
+		consume_skb(skb);
+	wake_up_interruptible(&tx_wait);
+	if(needs_unlock)
+		spin_unlock_bh(&tx_box_lock);
+	return ret;
 }
 
 static int intrepid_netdevice_stop(struct net_device *dev)
@@ -221,276 +272,360 @@ static int intrepid_netdevice_stop(struct net_device *dev)
 static int intrepid_netdevice_open(struct net_device *dev)
 {
 	netif_start_queue(dev);
-
 	return 0;
 }
 
-static int intrepid_netdevice_change_mtu(struct net_device *dev, int new_mtu)
-{
-	return -EINVAL;
-}
+// static int intrepid_netdevice_change_mtu(struct net_device *dev, int new_mtu)
+// {
+// 	return -EINVAL;
+// }
 
 static const struct net_device_ops intrepid_netdevice_ops = {
 	.ndo_open               = intrepid_netdevice_open,
 	.ndo_stop               = intrepid_netdevice_stop,
 	.ndo_start_xmit         = intrepid_netdevice_xmit,
-	.ndo_change_mtu         = intrepid_netdevice_change_mtu,
+	//.ndo_change_mtu         = intrepid_netdevice_change_mtu,
 };
-
-static void intrepid_netdevice_free(struct net_device *dev)
-{
-        int i;
-
-	i = dev->base_addr;
-	free_candev(dev);
-	net_devices[i] = NULL;
-}
 
 static struct net_device* intrepid_get_dev_by_index(int index)
 {
-        if (index < 0 || index >= MAX_NET_DEVICES)
-                return NULL;
+	if (index < 0 || index >= MAX_NET_DEVICES)
+		return NULL;
 
-        if (net_devices[index] == NULL)
-                return NULL;
-
-        return net_devices[index];
+	return net_devices[index];
 }
 
-static int intrepid_remove_if(int index)
+static int intrepid_remove_can_if(int index)
 {
-        struct net_device *device = intrepid_get_dev_by_index(index);
-        if (!device)
-                return -EINVAL;
+	struct net_device *device = intrepid_get_dev_by_index(index);
+	if (!device)
+		return -EINVAL;
 
-        pr_info("intrepid: Removing device %s\n", device->name);
+	if (index != device->base_addr)
+		pr_warn("intrepid: Index of device %ld does not match given index %d\n", device->base_addr, index);
 
-        unregister_candev(device);
+	pr_info("intrepid: Removing device %d %s 0x%p\n", index, device->name, device);
 
-        return 0;
+	unregister_candev(device);
+
+	net_devices[index] = NULL;
+
+	pr_info("intrepid: Removed device %d\n", index);
+
+	return 0;
 }
 
-static int intrepid_add_if(struct intrepid_netdevice** result)
+static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *requestedName)
 {
-        int i, ret = -EPERM;
-        struct net_device *dev = NULL;
-        struct intrepid_netdevice *ics = NULL;
+	size_t aliasLen = 0;
+	int i;
+	int ret = -EPERM;
+	struct net_device *dev = NULL;
+	struct intrepid_netdevice *ics = NULL;
 
-        *result = NULL;
+	*result = NULL;
 
-        for (i = 0 ; i < MAX_NET_DEVICES ; ++i)
-        {
-                if (net_devices[i] == NULL)
-                        break;
-        }
+	for (i = 0; i < MAX_NET_DEVICES; i++) {
+		if (net_devices[i] == NULL)
+			break;
+	}
 
-        if (i >= MAX_NET_DEVICES)
-        {
-                pr_alert("intrepid: No more netdevices available\n");
-                ret = -ENFILE;
-                goto exit;
-        }
+	if (i >= MAX_NET_DEVICES) {
+		pr_alert("intrepid: No more netdevices available\n");
+		ret = -ENFILE;
+		goto exit;
+	}
 
-        dev = alloc_candev(sizeof(*ics), 0);
-        if (!dev)
-        {
-                pr_alert("intrepid: Could not allocate candev\n");
-                goto exit;
-        }
+	dev = alloc_candev(sizeof(*ics), 1);
+	if (!dev) {
+		pr_alert("intrepid: Could not allocate candev\n");
+		goto exit;
+	}
 
 
-        dev->base_addr          = i;
-        dev->flags             |= IFF_ECHO;
-        dev->netdev_ops         = &intrepid_netdevice_ops;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,9)
-        dev->destructor    = intrepid_netdevice_free;
-#else
-        dev->needs_free_netdev  = true;
-        dev->priv_destructor    = intrepid_netdevice_free;
-#endif
-        ics                     = netdev_priv(dev);
-        ics->dev                = dev;
-        ics->is_stopped         = 0;
-        ics->from_user          = GET_RX_BOX(i); /* incoming rx messages */
+	dev->base_addr          = i;
+	dev->flags             |= IFF_ECHO;
+	dev->min_mtu            = CAN_MTU;
+	dev->max_mtu            = CANFD_MTU;
+	dev->netdev_ops         = &intrepid_netdevice_ops;
+	if (requestedName && ((aliasLen = strlen(requestedName)) > 0) && aliasLen < IFALIASZ) {
+		dev->ifalias = kzalloc(sizeof(struct dev_ifalias) + aliasLen + 1, GFP_KERNEL);
+		if (dev->ifalias == NULL) {
+			pr_alert("intrepid: Could not allocate space for ifalias %lu\n", sizeof(struct dev_ifalias));
+		} else {
+			strncpy(dev->ifalias->ifalias, requestedName, aliasLen + 1);
+			pr_info("intrepid: %s alias set to %s\n", dev->name, requestedName);
+		}
+	}
+	ics                  = netdev_priv(dev);
+	ics->dev             = dev;
+	ics->is_stopped      = 0;
+	ics->from_user       = GET_RX_BOX(i); /* incoming rx messages */
 
-        spin_lock_init(&ics->lock);
+	spin_lock_init(&ics->lock);
 
-        ret = register_candev(dev);
-        if (ret)
-        {
-                pr_alert("intrepid: Could not register candev\n");
-                free_candev(dev);
-                goto exit;
-        }
+	ret = register_candev(dev);
+	if (ret) {
+		pr_alert("intrepid: Could not register candev\n");
+		free_candev(dev);
+		goto exit;
+	}
 
-        net_devices[i] = dev;
-        *result = ics;
+	if (dev_set_mtu(dev, CANFD_MTU)) {
+		pr_alert("intrepid: Could not set MTU\n");
+	}
 
-        ret = i;
+	net_devices[i] = dev;
+	*result = ics;
 
-        pr_info("intrepid: Allocated new netdevice %s\n", dev->name);
+	ret = i;
+
+	pr_info("intrepid: Allocated new netdevice %s @ %d\n", dev->name, ret);
 exit:
-        return ret;
+	return ret;
 
+}
+
+static int intrepid_fill_canerr_frame_from_neomessage(
+	struct net_device_stats *stats,
+	struct can_frame *cf,
+	const neomessage_can_t *msg)
+{
+	if (msg->status.transmitMessage) {
+		stats->tx_errors++;
+
+		if (msg->status.lostArbitration) {
+			cf->can_id |= CAN_ERR_LOSTARB;
+			cf->data[0] = CAN_ERR_LOSTARB_UNSPEC;
+		} else if (msg->status.vsiTXUnderrun) {
+			cf->can_id |= CAN_ERR_ACK;
+		} else {
+			cf->can_id |= CAN_ERR_PROT | CAN_ERR_BUSERROR;
+			cf->data[2] = CAN_ERR_PROT_TX;
+		}
+	} else {
+		stats->rx_over_errors++;
+		stats->rx_errors++;
+
+		if (msg->status.canBusShortedPlus) {
+			cf->can_id |= CAN_ERR_TRX | CAN_ERR_BUSERROR;
+			cf->data[4] = CAN_ERR_TRX_CANH_SHORT_TO_BAT | CAN_ERR_TRX_CANL_SHORT_TO_BAT;
+		} else {
+			cf->can_id |= CAN_ERR_BUSERROR;
+		}
+	}
+
+	return 0;
+}
+
+static int intrepid_fill_canfd_frame_from_neomessage(
+	struct net_device_stats *stats,
+	struct canfd_frame *cf,
+	const neomessage_can_t *msg,
+	const uint8_t *data)
+{
+	if (msg->status.extendedFrame)
+		cf->can_id |= (msg->arbid & CAN_EFF_MASK) | CAN_EFF_FLAG;
+	else
+		cf->can_id |= msg->arbid & CAN_SFF_MASK;
+
+	if (msg->status.canfdBRS)
+		cf->flags |= CANFD_BRS;
+	if (msg->status.canfdESI)
+		cf->flags |= CANFD_ESI;
+	cf->len = msg->length;
+	memcpy(cf->data, data, cf->len);
+
+	stats->rx_bytes += cf->len;
+	stats->rx_packets++;
+
+	return 0;
+}
+
+static int intrepid_fill_can_frame_from_neomessage(
+	struct net_device_stats *stats,
+	struct can_frame *cf,
+	const neomessage_can_t *msg,
+	const uint8_t *data)
+{
+	if (msg->status.extendedFrame)
+		cf->can_id |= (msg->arbid & CAN_EFF_MASK) | CAN_EFF_FLAG;
+	else
+		cf->can_id |= msg->arbid & CAN_SFF_MASK;
+	
+	if (msg->status.remoteFrame)
+		cf->can_id |= CAN_RTR_FLAG;
+
+	cf->can_dlc = get_can_dlc(msg->length);
+	memcpy(cf->data, data, cf->can_dlc);
+
+	stats->rx_bytes += cf->can_dlc;
+	stats->rx_packets++;
+	
+	return 0;
+}
+
+static struct sk_buff *intrepid_skb_from_neomessage(
+	struct net_device *device,
+	const neomessage_t *msg,
+	const uint8_t *data,
+	struct net_device_stats *stats)
+{
+	struct sk_buff *skb = NULL;
+	struct canfd_frame* cf = NULL;
+	int ret = 0;
+
+	/* input validation */
+	if (unlikely(device == NULL || msg == NULL || data == NULL || stats == NULL)) {
+		stats->rx_dropped++;
+		pr_warn("intrepid: Dropping message on %s, skb from neomessage input validation failed", device->name);
+		goto fail;
+	}
+
+	if (msg->status.globalError)
+		skb = alloc_can_err_skb(device, (struct can_frame**)&cf);
+	else if (msg->status.canfdFDF)
+		skb = alloc_canfd_skb(device, &cf);
+	else
+		skb = alloc_can_skb(device, (struct can_frame**)&cf);
+
+	if (unlikely(skb == NULL)) {
+		stats->rx_dropped++;
+		pr_warn("intrepid: Dropping message on %s, skb allocation failed", device->name);
+		goto fail;
+	}
+
+	switch(msg->type) {
+		case ICSNEO_NETWORK_TYPE_CAN:
+			if (msg->status.globalError)
+				ret = intrepid_fill_canerr_frame_from_neomessage(
+					stats,
+					(struct can_frame*)cf,
+					(const neomessage_can_t*)msg);
+			else if (msg->status.canfdFDF)
+				ret = intrepid_fill_canfd_frame_from_neomessage(
+					stats,
+					cf,
+					(const neomessage_can_t*)msg,
+					data);
+			else
+				ret = intrepid_fill_can_frame_from_neomessage(
+					stats,
+					(struct can_frame*)cf,
+					(const neomessage_can_t*)msg,
+					data);
+			break;
+		default:
+			pr_warn("intrepid: Dropping message on %s, invalid type %d", device->name, msg->type);
+			goto fail;
+	}
+
+
+	if (unlikely(ret != 0)) {
+		pr_warn("intrepid: Dropping message on %s, frame fill failed", device->name);
+		goto fail;
+	}
+
+fail:
+	return skb;
 }
 
 static int intrepid_read_messages(int device_index, unsigned int count)
 {
-        unsigned int i;
-        struct icsSpyMessage* msg;
-        struct intrepid_netdevice* ics;
-        struct net_device_stats *stats;
-        struct net_device *device = intrepid_get_dev_by_index(device_index);
-        if (!device)
-                return -EINVAL;
+	const uint8_t* currentPosition;
+	struct intrepid_netdevice* ics;
+	struct net_device_stats *stats;
+	struct net_device *device = intrepid_get_dev_by_index(device_index);
+	if (!device)
+		return -EINVAL;
 
-        stats   = &device->stats;
-        ics     = netdev_priv(device);
-        msg     = (struct icsSpyMessage*)ics->from_user;
+	stats = &device->stats;
+	ics = netdev_priv(device);
+	currentPosition = ics->from_user;
+	if (count != 1)
+		pr_info("intrepid: reading %d messages\n", count);
 
-        if (count > MAX_NUM_RX_MSGS)
-                count = MAX_NUM_RX_MSGS;
+	/* ics->from_user is where usermode copied in some neomessage_ts that need
+	 * to be pumped into the receive plumbing of the interface. loop over them,
+	 * converting neomessage_t to a CAN sk_buff */
 
-        /* ics->from_user is where usermode copied in some icsSpyMessages that need
-         * to be pumped into the receive plumbing of the interface. loop over them,
-         * converting icsSpyMessage to a CAN sk_buff */
+	while (count--) {
+		const neomessage_t *msg;
+		const uint8_t *data;
+		struct sk_buff *skb;
+		int ret = 0;
 
-        for (i = 0 ; i < count ; ++i, ++msg)
-        {
-                int               ret;
-                int               is_error;
-                struct can_frame *cf;
-                struct sk_buff   *skb;
+		msg = (const neomessage_t*)currentPosition;
+		currentPosition += sizeof(neomessage_t);
+		data = currentPosition;
+		currentPosition += msg->length;
 
-                is_error = msg->StatusBitField & SPY_STATUS_GLOBAL_ERR;
+		/* pass along the converted message to the kernel for dispatch */
+		skb = intrepid_skb_from_neomessage(device, msg, data, stats);
+		if (likely(skb != NULL))
+			ret = netif_rx(skb);
 
-                if (is_error)
-                        skb = alloc_can_err_skb(device, &cf);
-                else
-                        skb = alloc_can_skb(device, &cf);
+		if (ret == NET_RX_DROP)
+			pr_warn("intrepid: Dropping message on %s, dropped by kernel", device->name);
+	}
 
-                if (unlikely(skb == NULL))
-                {
-                        stats->rx_dropped++;
-                        WARN_ONCE(1, "intrepid: Dropped message on %s: no memory\n",
-                                device->name);
-                        continue;
-                }
-
-                /* if this is a regular message copy over the data bytes and ID, otherwise for
-                 * an error fill out what type of error it is */
-                if (is_error)
-                {
-                        if (msg->StatusBitField & SPY_STATUS_TX_MSG)
-                        {
-                                if (msg->StatusBitField & SPY_STATUS_LOST_ARBITRATION)
-                                {
-                                        cf->can_id |= CAN_ERR_LOSTARB;
-                                        cf->data[0] = CAN_ERR_LOSTARB_UNSPEC;
-                                }
-                                else if (msg->StatusBitField & SPY_STATUS_VSI_TX_UNDERRUN)
-                                {
-                                        cf->can_id |= CAN_ERR_ACK;
-                                }
-                                else
-                                {
-                                        cf->can_id |= CAN_ERR_PROT | CAN_ERR_BUSERROR;
-                                        cf->data[2] = CAN_ERR_PROT_TX;
-                                }
-
-                                stats->tx_errors++;
-                        }
-                        else
-                        {
-                                if (msg->StatusBitField & SPY_STATUS_BUS_SHORTED_PLUS)
-                                {
-                                        cf->can_id |= CAN_ERR_TRX | CAN_ERR_BUSERROR;
-                                        cf->data[4] = CAN_ERR_TRX_CANH_SHORT_TO_BAT |
-                                                        CAN_ERR_TRX_CANL_SHORT_TO_BAT;
-                                }
-                                else
-                                {
-                                        cf->can_id |= CAN_ERR_BUSERROR;
-                                }
-
-                                stats->rx_over_errors++;
-                                stats->rx_errors++;
-                        }
-                }
-                else
-                {
-                        if (msg->StatusBitField & SPY_STATUS_XTD_FRAME)
-                                cf->can_id  |= (msg->ArbIDOrHeader & CAN_EFF_MASK)
-                                                | CAN_EFF_FLAG;
-                        else
-                                cf->can_id  |= msg->ArbIDOrHeader & CAN_SFF_MASK;
-                        if (msg->StatusBitField & SPY_STATUS_REMOTE_FRAME)
-                                cf->can_id |= CAN_RTR_FLAG;
-
-                        cf->can_dlc = get_can_dlc(msg->NumberBytesData);
-                        memcpy(cf->data, msg->Data, cf->can_dlc);
-                }
-
-                /* pass along the converted message to the kernel for dispatch */
-                ret = netif_rx(skb);
-                WARN_ONCE(ret == NET_RX_DROP,
-                        "intrepid: Dropping message on %s: backlog full\n", device->name);
-
-                /* update our interface's stats */
-                stats->rx_bytes += cf->can_dlc;
-                stats->rx_packets++;
-        }
-
-        return 0;
+	return 0;
 }
 
 static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 {
-        int ret = -EINVAL;
-        if (mutex_lock_interruptible(&ioctl_mutex)) {
-                pr_info("intrepid: ioctl handler interrupted\n");
-                return -ERESTARTSYS;
-        }
+	int ret = -EINVAL;
+	if (mutex_lock_interruptible(&ioctl_mutex)) {
+		pr_info("intrepid: ioctl handler interrupted\n");
+		return -ERESTARTSYS;
+	}
 
-        switch (cmd)
-        {
-        case SIOCSADDIF:
-        {
-                struct intrepid_netdevice *result = NULL;
+	switch (cmd) {
+		case SIOCSADDIF: {
+			struct intrepid_netdevice *result = NULL;
+			char requestedNameBuffer[IFALIASZ] = {0};
+			char* requestedName = NULL;
+			if ((void __user*)arg != NULL) {
+				copy_from_user(requestedNameBuffer, (void __user*)arg, IFALIASZ);
+				requestedName = requestedNameBuffer;
+			}
 
-                ret = intrepid_add_if(&result);
-                if (result && (ret >= 0) && arg)
-                {
-                        int len = strlen(result->dev->name) + 1;
-                        if (copy_to_user((void __user *)arg, result->dev->name, len))
-                        {
-                                intrepid_remove_if(ret);
-                                ret = -EFAULT;
-                                break;
-                        }
-                }
-        }       break;
-        case SIOCSREMOVEIF:
-                ret = intrepid_remove_if(arg);
-                break;
-        case SIOCGSHAREDMEMSIZE:
-                ret = SHARED_MEM_SIZE;
-                break;
-        case SIOCGMAXIFACES:
-                ret = MAX_NET_DEVICES;
-                break;
-        case SIOCSMSGSWRITTEN:
-        {
-                int             index = (int)(arg >> 16);
-                unsigned int    count = (int)(arg & 0xffff);
+			ret = intrepid_add_can_if(&result, requestedName);
+			break;
+		}
+		case SIOCSREMOVEIF:
+			ret = intrepid_remove_can_if (arg);
+			break;
+		case SIOCGSHAREDMEMSIZE:
+			ret = SHARED_MEM_SIZE;
+			break;
+		case SIOCGMAXIFACES:
+			ret = MAX_NET_DEVICES;
+			break;
+		case SIOCGVERSION:
+			ret = KO_VERSION_INT;
+			break;
+		case SIOCGCLIENTVEROK:
+			/* Here we can do checks to see if the usermode daemon is
+			 * a compatible version with us. We don't enforce anything
+			 * on the kernel side. For now, being version 2.X.X is good.
+			 */
+			if (VER_MAJ_FROM_INT(arg) == 2)
+				ret = 0; /* ok to start */
+			else
+				ret = 1;
+			break;
+		case SIOCSMSGSWRITTEN: {
+			int          index = (int)(arg >> 16);
+			unsigned int count = (int)(arg & 0xffff);
 
-                ret = intrepid_read_messages(index, count);
-        }
-                break;
-        } /* end switch (cmd) */
+			ret = intrepid_read_messages(index, count);
+			break;
+		}
+	} /* end switch (cmd) */
 
-        mutex_unlock(&ioctl_mutex);
-        return ret;
+	mutex_unlock(&ioctl_mutex);
+	return ret;
 }
 
 /* when the mmap()ed pages are first accesed by usermode there will be a page fault.
@@ -500,64 +635,52 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
  * longer takes the vma parameter (since it resides in vmf) */
 static int intrepid_vm_fault(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
-        struct vm_area_struct *vma,
+	struct vm_area_struct *vma,
 #endif
-        struct vm_fault *vmf)
+	struct vm_fault *vmf)
 {
-        vmf->page = vmalloc_to_page(shared_mem + (vmf->pgoff << PAGE_SHIFT));
-        get_page(vmf->page); /* increment reference count, very important */
+	vmf->page = vmalloc_to_page(shared_mem + (vmf->pgoff << PAGE_SHIFT));
+	get_page(vmf->page); /* increment reference count, very important */
 
-        return 0;
+	return 0;
 }
 
 static struct vm_operations_struct intrepid_vm_ops = {
-        .fault          = intrepid_vm_fault
+	.fault = intrepid_vm_fault
 };
 
 static int intrepid_dev_mmap(struct file* fp, struct vm_area_struct *vma)
 {
-        vma->vm_ops = &intrepid_vm_ops;
-        return 0;
+	vma->vm_ops = &intrepid_vm_ops;
+	return 0;
 }
 
 static int intrepid_dev_open(struct inode *ip, struct file *fp)
 {
-        if (is_open)
-                return -EIO;
+	if (is_open)
+		return -EIO;
 
-        /* these are the ping pong buffers we'll use to transfer tx requests to usermode */
-        tx_box_count[0] = 0;
-        tx_box_count[1] = 0;
-
-        /* the current tx box is shared across all devices */
-        current_tx_box = 0;
-
-        is_open = 1;
-
-        return 0;
+	is_open = 1;
+	return 0;
 }
 
-/* called when /dev/intrepid_netdevice is close -- delete any created interfaces */
+/* called when /dev/intrepid_netdevice is closed -- delete any created interfaces */
 static int intrepid_dev_release(struct inode *ip, struct file *fp)
 {
-        int i;
+	int i;
 
-        if (!is_open)
-                return -EIO;
+	if (!is_open)
+		return -EIO;
 
-        tx_box_count[0] = 0;
-        tx_box_count[1] = 0;
+	wake_up_interruptible(&tx_wait);
 
-        wake_up_interruptible(&tx_wait);
+	for (i = 0; i < MAX_NET_DEVICES; i++) {
+		if (net_devices[i] != NULL)
+			intrepid_remove_can_if(i);
+	}
 
-        for (i = 0 ; i < MAX_NET_DEVICES ; ++i)
-        {
-                if (net_devices[i] != NULL)
-                        intrepid_remove_if(i);
-        }
-
-        is_open = 0;
-        return 0;
+	is_open = 0;
+	return 0;
 }
 
 /* usermode uses read() to get the current size of the tx buffer. we use a ping pong buffer
@@ -565,192 +688,154 @@ static int intrepid_dev_release(struct inode *ip, struct file *fp)
  * still avoiding a full copy to user. the ping pong flips on every call to this func */
 static ssize_t intrepid_dev_read(struct file *fp, char *buffer, size_t len, loff_t *offset)
 {
-        struct intrepid_pending_tx_info info;
-        struct net_device* dev;
-        struct intrepid_netdevice *ics;
-        int ret, i;
+	struct intrepid_pending_tx_info info;
+	int ret;
 
-        if (len < sizeof(info))
-                return -EFAULT;
+	if (len < sizeof(info))
+		return -EFAULT;
 
-        spin_lock_bh(&tx_box_lock);
+	spin_lock_bh(&tx_box_lock);
 
-        /* fill out the info for the user */
-        info.tx_box_index = current_tx_box;
-        info.count        = tx_box_count[current_tx_box];
+	/* fill out the info for the user */
+	info.tx_box_index = current_tx_box;
+	info.count        = tx_box_count[current_tx_box];
+	info.bytes        = tx_box_bytes[current_tx_box];
 
-        ret = copy_to_user(buffer, &info, sizeof(info));
+	ret = copy_to_user(buffer, &info, sizeof(info));
 
-        /* if we're full, pause the queue */
-        if (info.count == MAX_NUM_TX_MSGS)
-        {
-                for(i = 0 ; i < MAX_NET_DEVICES ; ++i)
-                {
-                        dev = net_devices[i];
-                        if (dev == NULL)
-                                continue;
+	/* if we were full, unpause the queue */
+	intrepid_unpause_all_queues();
 
-                        ics = netdev_priv(dev);
+	tx_box_count[current_tx_box] = 0;
+	tx_box_bytes[current_tx_box] = 0;
 
-                        if (ics->is_stopped)
-                        {
-                                spin_lock_bh(&ics->lock);
-                                netif_wake_queue(dev);
-                                spin_unlock_bh(&ics->lock);
-                        }
-                }
-        }
+	/* swap to the other buffer. once we unlock new tx messages will go to the new box */
+	current_tx_box = current_tx_box == 0 ? 1 : 0;
 
-        tx_box_count[current_tx_box] = 0;
+	spin_unlock_bh(&tx_box_lock);
 
-        /* swap to the other buffer. once we unlock new tx messages will go to the new box */
-        if (current_tx_box == 0)
-                current_tx_box = 1;
-        else
-                current_tx_box = 0;
-
-        spin_unlock_bh(&tx_box_lock);
-
-        if (ret != 0)
-        {
-                return -EFAULT;
-        }
-
-        return sizeof(info);
+	if (ret != 0)
+		return -EFAULT;
+	return sizeof(info);
 }
 
 static unsigned int intrepid_dev_poll(struct file *fp, poll_table *wait)
 {
-        /* tx_wait is woken up in intrepid_netdevice_xmit. remember we're backwards here;
-         * the usermode is waiting to read messages to subsequently transmit out */
-        poll_wait(fp, &tx_wait, wait);
+	/* tx_wait is woken up in intrepid_netdevice_xmit. remember we're backwards here;
+	 * the usermode is waiting to read messages to subsequently transmit out */
+	poll_wait(fp, &tx_wait, wait);
 
-        if (tx_box_count[current_tx_box] > 0)
-                return POLLIN | POLLRDNORM;
-
-        return 0;
+	if (tx_box_count[current_tx_box] > 0)
+		return POLLIN | POLLRDNORM;
+	
+	return 0;
 }
 
 static struct file_operations intrepid_fops = {
-        .open           = intrepid_dev_open,
-        .read           = intrepid_dev_read,
-        .release        = intrepid_dev_release,
-        .mmap           = intrepid_dev_mmap,
-        .unlocked_ioctl = intrepid_dev_ioctl,
-        .poll           = intrepid_dev_poll
+	.open           = intrepid_dev_open,
+	.read           = intrepid_dev_read,
+	.release        = intrepid_dev_release,
+	.mmap           = intrepid_dev_mmap,
+	.unlocked_ioctl = intrepid_dev_ioctl,
+	.poll           = intrepid_dev_poll
 };
 
 static __init int intrepid_init(void)
 {
-        int ret;
-        pr_info("intrepid: %s %s\n", KO_DESC, KO_VERSION);
+	int ret;
+	pr_info("intrepid: %s %s\n", KO_DESC, KO_VERSION);
 
-        is_open = 0;
+	is_open = 0;
 
-        /* this is the shared memory used to transfer between us and the user daemon */
-        shared_mem = vmalloc_user(SHARED_MEM_SIZE);
-        if (!shared_mem)
-        {
-                ret = -ENOMEM;
-                goto exit;
-        }
+	/* this is the shared memory used to transfer between us and the user daemon */
+	shared_mem = vmalloc_user(SHARED_MEM_SIZE);
+	if (!shared_mem) {
+		ret = -ENOMEM;
+		goto exit;
+	}
 
-        /* make space for up to MAX_NET_DEVICES devices */
-        net_devices = kzalloc(sizeof(struct net_device*) * MAX_NET_DEVICES, GFP_KERNEL);
-        if (!net_devices)
-        {
-                ret = -ENOMEM;
-                goto free_shared_mem;
-        }
+	/* make space for up to MAX_NET_DEVICES devices */
+	net_devices = kzalloc(sizeof(struct net_device*) * MAX_NET_DEVICES, GFP_KERNEL);
+	if (!net_devices) {
+		ret = -ENOMEM;
+		goto free_shared_mem;
+	}
 
-        /* to make our ioctls blocking we wrap the handlers in a global mutex */
-        mutex_init(&ioctl_mutex);
+	/* to make our ioctls blocking we wrap the handlers in a global mutex */
+	mutex_init(&ioctl_mutex);
 
-        /* this is the queue of processes waiting to read from our device. we'll signal
-         * once some tx messages are ready */
-        init_waitqueue_head(&tx_wait);
+	/* this is the queue of processes waiting to read from our device. we'll signal
+	 * once some tx messages are ready */
+	init_waitqueue_head(&tx_wait);
 
-        /* this is used to arbitrate access to current_tx_box and tx_box_count */
-        spin_lock_init(&tx_box_lock);
+	tx_boxes[0]     = GET_TX_BOX(0);
+	tx_boxes[1]     = GET_TX_BOX(1);
+	tx_box_bytes[0] = 0;
+	tx_box_bytes[1] = 0;
+	tx_box_count[0] = 0;
+	tx_box_count[1] = 0;
+	current_tx_box  = 0;
+	spin_lock_init(&tx_box_lock);
 
-        /* parts of the shared memory for sending tx messages to user. we use ping pong
-         * buffers that get switched whenever we handle a read() */
-        tx_boxes[0]     = GET_TX_BOX(0);
-        tx_boxes[1]     = GET_TX_BOX(1);
+	/* create /dev/intrepid_netdevice */
 
-        /* create /dev/intrepid_netdevice */
+	major_number = register_chrdev(0, INTREPID_DEVICE_NAME, &intrepid_fops);
+	if (major_number < 0) {
+		pr_alert("intrepid: failed to register major number, got %d\n",
+			major_number);
+		return -1;
+	}
 
-        major_number = register_chrdev(0, INTREPID_DEVICE_NAME, &intrepid_fops);
-        if (major_number < 0)
-        {
-                pr_alert("intrepid: failed to register major number, got %d\n",
-                        major_number);
-                return -1;
-        }
+	intrepid_dev_class = class_create(THIS_MODULE, INTREPID_CLASS_NAME);
+	if (IS_ERR(intrepid_dev_class)) {
+		ret = PTR_ERR(intrepid_dev_class);
+		pr_alert("intrepid: failed to create device class, got %d\n", ret);
+		unregister_chrdev(major_number, INTREPID_DEVICE_NAME);
+		goto free_net_devices;
+	}
 
-        intrepid_dev_class = class_create(THIS_MODULE, INTREPID_CLASS_NAME);
-        if (IS_ERR(intrepid_dev_class))
-        {
-                ret = PTR_ERR(intrepid_dev_class);
-                pr_alert("intrepid: failed to create device class, got %d\n", ret);
-                unregister_chrdev(major_number, INTREPID_DEVICE_NAME);
-                goto free_net_devices;
-        }
+	intrepid_dev = device_create(intrepid_dev_class, NULL,
+		MKDEV(major_number, 0), NULL, INTREPID_DEVICE_NAME);
+	if (IS_ERR(intrepid_dev)) {
+		ret = PTR_ERR(intrepid_dev);
+		pr_alert("intrepid: failed to create device, got %d\n", ret);
+		class_destroy(intrepid_dev_class);
+		unregister_chrdev(major_number, INTREPID_DEVICE_NAME);
+		goto free_net_devices;
+	}
 
-        intrepid_dev = device_create(intrepid_dev_class, NULL,
-                MKDEV(major_number, 0), NULL, INTREPID_DEVICE_NAME);
-        if(IS_ERR(intrepid_dev))
-        {
-                ret = PTR_ERR(intrepid_dev);
-                pr_alert("intrepid: failed to create device, got %d\n", ret);
-                class_destroy(intrepid_dev_class);
-                unregister_chrdev(major_number, INTREPID_DEVICE_NAME);
-                goto free_net_devices;
-        }
-
-        ret = 0;
-        pr_info("intrepid: created %s\n", INTREPID_DEVICE_NAME);
+	ret = 0;
+	pr_info("intrepid: created %s\n", INTREPID_DEVICE_NAME);
 exit:
-        return ret;
+	return ret;
 
 free_net_devices:
-        kzfree(net_devices);
+	kzfree(net_devices);
 free_shared_mem:
-        vfree(shared_mem);
-        return ret;
+	vfree(shared_mem);
+	return ret;
 }
 
 static __exit void intrepid_exit(void)
 {
-        int i;
-        pr_info("intrepid: exit\n");
+	int i;
+	pr_info("intrepid: exit\n");
 
-        device_destroy(intrepid_dev_class, MKDEV(major_number, 0));
-        class_unregister(intrepid_dev_class);
-        class_destroy(intrepid_dev_class);
-        unregister_chrdev(major_number, INTREPID_DEVICE_NAME);
+	device_destroy(intrepid_dev_class, MKDEV(major_number, 0));
+	class_unregister(intrepid_dev_class);
+	class_destroy(intrepid_dev_class);
+	unregister_chrdev(major_number, INTREPID_DEVICE_NAME);
 
-        for (i = 0 ; i < MAX_NET_DEVICES ; ++i)
-        {
-                if (net_devices[i] != NULL)
-                {
-                    // Kernel version 4.11.9 changed the destructor function to
-                    // priv_destructor
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,9)
-                        net_devices[i]->destructor = NULL; /* no dangling callbacks */
-#else
-                        net_devices[i]->priv_destructor = NULL;
-#endif
-                        intrepid_remove_if(i);
-                }
-        }
+	for (i = 0; i < MAX_NET_DEVICES; i++) {
+		if (net_devices[i] != NULL)
+			intrepid_remove_can_if(i);
+	}
 
-        kfree(net_devices);
-        net_devices = NULL;
+	kfree(net_devices);
+	net_devices = NULL;
 
-        vfree(shared_mem);
-        shared_mem = NULL;
-
+	vfree(shared_mem);
+	shared_mem = NULL;
 }
 
 module_init(intrepid_init);

@@ -32,6 +32,7 @@ modules.builtin
 *.lzo
 *.patch
 *.gcno
+*.old
 
 #
 # Top-level generic files
@@ -55,6 +56,11 @@ Module.symvers
 #
 !.gitignore
 !.mailmap
+
+#
+# Visual Studio Code
+#
+!.vscode
 
 #
 # Generated include files

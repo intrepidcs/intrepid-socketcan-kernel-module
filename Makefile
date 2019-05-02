@@ -8,3 +8,9 @@ install:
 	depmod -a
 clean:
 	make -C /lib/modules/$(KVERSION)/build M=$(PWD) clean
+reload: all
+	-sudo rmmod intrepid
+	sudo modprobe can
+	sudo modprobe can_raw
+	sudo modprobe can_dev
+	sudo insmod intrepid.ko

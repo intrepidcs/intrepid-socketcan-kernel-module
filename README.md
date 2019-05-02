@@ -1,12 +1,22 @@
-This is the kernel object portion of Intrepid Control Systems' SocketCAN support. For SocketCAN to work with Intrepid devices you will need to have this kernel object loaded on your system. Once the module is built and loaded run [icsscand](https://github.com/intrepidcs/icsscand) to turn on SocketCAN support.
+Version 2.0.0
 
-First, build the KO.
+This is the kernel object portion of the Intrepid Control Systems SocketCAN support. For SocketCAN to work with Intrepid devices you will need to have this kernel object loaded on your system. Once the module is built and loaded run [icsscand](https://github.com/intrepidcs/icsscand) to turn on SocketCAN support.
 
-```
-$ make
-```
+First, install the necessary dependencies for building kernel modules.
+
+On Ubuntu, this is acomplished by running `sudo apt install linux-headers-generic build-essential gcc git`
+
+Clone this repository by running `git clone https://github.com/intrepidcs/intrepid-socketcan-kernel-module.git`
+
+Change into the resulting clone, `cd intrepid-socketcan-kernel-module`
+
+Then, build the KO, `make`
 
 The resulting file will be ```intrepid.ko```. This module depends on ```can```, ```can_dev```, and ```can_raw``` (which should already be a part of your system). Before you can load the module, make sure these modules are loaded, then ```insmod``` can be used to load it.
+
+A script is provided to help within the makefile, `make reload`.
+
+If you prefer to run it yourself, you can run
 
 ```
 $ sudo modprobe can
@@ -15,7 +25,9 @@ $ sudo modprobe can_dev
 $ sudo insmod intrepid.ko
 ```
 
-```lsmod``` can confirm the module is loaded. If you wish you have the module auto-load on boot run ```make install``` once the module is built.
+```lsmod``` can confirm the module is loaded. At this point, you can refer to the [icsscand](https://github.com/intrepidcs/icsscand) instructions.
+
+If you wish you have the module auto-load on boot run ```make install``` once the module is built.
 
 ```
 $ sudo make install
