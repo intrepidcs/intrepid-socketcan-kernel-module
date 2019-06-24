@@ -5,6 +5,7 @@ all:
 install:
 	mkdir -p /lib/modules/$(KVERSION)/extra
 	cp intrepid.ko /lib/modules/$(KVERSION)/extra/
+	grep -q -F 'intrepid' /etc/modules || echo 'intrepid' | tee -a /etc/modules
 	depmod -a
 clean:
 	make -C /lib/modules/$(KVERSION)/build M=$(PWD) clean
