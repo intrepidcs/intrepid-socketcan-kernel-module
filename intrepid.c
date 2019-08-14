@@ -57,7 +57,7 @@
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 2
 #define KO_MINOR 0
-#define KO_PATCH 0
+#define KO_PATCH 1
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
@@ -142,12 +142,12 @@ static void intrepid_unpause_all_queues(void)
 			continue;
 
 		ics = netdev_priv(dev);
+		spin_lock_bh(&ics->lock);
 		if (ics->is_stopped) {
-			spin_lock_bh(&ics->lock);
 			netif_wake_queue(dev);
 			ics->is_stopped = 0;
-			spin_unlock_bh(&ics->lock);
 		}
+		spin_unlock_bh(&ics->lock);
 	}
 }
 
@@ -161,12 +161,12 @@ static void intrepid_pause_all_queues(void)
 			continue;
 
 		ics = netdev_priv(dev);
+		spin_lock_bh(&ics->lock);
 		if (!ics->is_stopped) {
-			spin_lock_bh(&ics->lock);
 			ics->is_stopped = 1;
 			netif_stop_queue(dev);
-			spin_unlock_bh(&ics->lock);
 		}
+		spin_unlock_bh(&ics->lock);
 	}
 }
 
@@ -347,6 +347,7 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	dev->flags             |= IFF_ECHO;
 	dev->min_mtu            = CAN_MTU;
 	dev->max_mtu            = CANFD_MTU;
+	dev->mtu                = CANFD_MTU; /* TODO: Check CAN-FD support from usermode daemon */
 	dev->netdev_ops         = &intrepid_netdevice_ops;
 	if (requestedName && ((aliasLen = strlen(requestedName)) > 0) && aliasLen < IFALIASZ) {
 		dev->ifalias = kzalloc(sizeof(struct dev_ifalias) + aliasLen + 1, GFP_KERNEL);
@@ -369,10 +370,6 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 		pr_alert("intrepid: Could not register candev\n");
 		free_candev(dev);
 		goto exit;
-	}
-
-	if (dev_set_mtu(dev, CANFD_MTU)) {
-		pr_alert("intrepid: Could not set MTU\n");
 	}
 
 	net_devices[i] = dev;
@@ -541,6 +538,7 @@ static int intrepid_read_messages(int device_index, unsigned int count)
 
 	stats = &device->stats;
 	ics = netdev_priv(device);
+	spin_lock_bh(&ics->lock);
 	currentPosition = ics->from_user;
 	if (count != 1)
 		pr_info("intrepid: reading %d messages\n", count);
@@ -569,6 +567,7 @@ static int intrepid_read_messages(int device_index, unsigned int count)
 			pr_warn("intrepid: Dropping message on %s, dropped by kernel", device->name);
 	}
 
+	spin_unlock_bh(&ics->lock);
 	return 0;
 }
 
