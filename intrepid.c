@@ -321,7 +321,10 @@ static int intrepid_remove_can_if(int index)
 
 static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *requestedName)
 {
+	// The `requestedName` parameter is always NULL if KERNEL_SUPPORTS_ALIASES is false
+#if KERNEL_SUPPORTS_ALIASES
 	size_t aliasLen = 0;
+#endif
 	int i;
 	int ret = -EPERM;
 	struct net_device *dev = NULL;
@@ -590,6 +593,7 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 	switch (cmd) {
 		case SIOCSADDIF: {
 			struct intrepid_netdevice *result = NULL;
+#if KERNEL_SUPPORTS_ALIASES
 			char requestedNameBuffer[IFALIASZ] = {0};
 			char* requestedName = NULL;
 			int bytesNotCopied = 0;
@@ -600,6 +604,9 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 				requestedName = requestedNameBuffer;
 			}
 			ret = intrepid_add_can_if(&result, requestedName);
+#else
+			ret = intrepid_add_can_if(&result, NULL);
+#endif
 			break;
 		}
 		case SIOCSREMOVEIF:
