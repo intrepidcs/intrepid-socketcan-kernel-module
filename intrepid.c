@@ -237,7 +237,7 @@ static netdev_tx_t intrepid_netdevice_xmit(struct sk_buff *skb, struct net_devic
 		/* This should never happen, the queue should be paused before this */
 		ssize_t offset = TX_BOX_SIZE;
 		offset -= (tx_box_bytes[current_tx_box] + sizeof(neomessage_can_t) + msg.length);
-		pr_err("intrepid: %ld length message caused NETDEV_TX_BUSY (%ld)\n", msg.length, offset);
+		pr_err("intrepid: %zu length message caused NETDEV_TX_BUSY (%zd)\n", msg.length, offset);
 		ret = NETDEV_TX_BUSY;
 		goto exit;
 	}
@@ -362,7 +362,7 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	if (requestedName && ((aliasLen = strlen(requestedName)) > 0) && aliasLen < IFALIASZ) {
 		dev->ifalias = kzalloc(sizeof(struct dev_ifalias) + aliasLen + 1, GFP_KERNEL);
 		if (dev->ifalias == NULL) {
-			pr_alert("intrepid: Could not allocate space for ifalias %lu\n", sizeof(struct dev_ifalias));
+			pr_alert("intrepid: Could not allocate space for ifalias %zu\n", sizeof(struct dev_ifalias));
 		} else {
 			strncpy(dev->ifalias->ifalias, requestedName, aliasLen + 1);
 			pr_info("intrepid: %s alias set to %s\n", dev->name, requestedName);
