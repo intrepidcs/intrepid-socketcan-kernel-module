@@ -1,0 +1,21 @@
+v2.0.2
+	Add support for older kernels
+		Tested working properly back to 4.4
+	Disabled aliasing for kernels <4.15
+		Required, as these kernels do not have netdevice aliasing
+	Use the correct format specifier for (s)size_t
+		Resolves a compile-time warning on 32-bit
+	Check the return type of copy_from_user
+		Resolves a compile-time warning on ARM
+	Standardize kernel version checking
+	Requires icsscand >= v2.0.1
+		icsscand v2.0.0 will not work with older kernels, and would display an obscure error
+
+v2.0.1
+	Resolve runtime warning message on changing MTU
+	Reviewed our locking behavior, made tweaks where necessary
+
+v2.0.0
+	Full rewrite
+	Initial release with CAN-FD support
+	Requires icsscand >= v2.0.0

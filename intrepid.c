@@ -57,7 +57,7 @@
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 2
 #define KO_MINOR 0
-#define KO_PATCH 1
+#define KO_PATCH 2
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
@@ -624,9 +624,11 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 		case SIOCGCLIENTVEROK:
 			/* Here we can do checks to see if the usermode daemon is
 			 * a compatible version with us. We don't enforce anything
-			 * on the kernel side. For now, being version 2.X.X is good.
+			 * on the kernel side. icsscand v2.0.0 will not work with
+			 * older kernels, and would display an obscure error, thus
+			 * we want to ask the user to update to v2.0.1 or later
 			 */
-			if (VER_MAJ_FROM_INT(arg) == 2)
+			if (VER_MAJ_FROM_INT(arg) == 2 && (VER_MIN_FROM_INT(arg) > 0 || VER_PATCH_FROM_INT(arg) >= 1))
 				ret = 0; /* ok to start */
 			else
 				ret = 1;
