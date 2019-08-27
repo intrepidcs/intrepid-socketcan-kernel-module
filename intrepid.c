@@ -592,11 +592,13 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 			struct intrepid_netdevice *result = NULL;
 			char requestedNameBuffer[IFALIASZ] = {0};
 			char* requestedName = NULL;
+			int bytesNotCopied = 0;
 			if ((void __user*)arg != NULL) {
-				copy_from_user(requestedNameBuffer, (void __user*)arg, IFALIASZ);
+				bytesNotCopied = copy_from_user(requestedNameBuffer, (void __user*)arg, IFALIASZ);
+				if(bytesNotCopied != 0)
+					pr_warn("intrepid: %d bytes not copied for alias", bytesNotCopied);
 				requestedName = requestedNameBuffer;
 			}
-
 			ret = intrepid_add_can_if(&result, requestedName);
 			break;
 		}
