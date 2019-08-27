@@ -89,6 +89,10 @@ MODULE_VERSION(KO_VERSION);
  */
 #define MAX_MTU                         CANFD_MTU
 
+#define KERNEL_CHECKS_MTU_RANGE         (LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0))
+#define KERNEL_FAULT_TAKES_VMA          (LINUX_VERSION_CODE <  KERNEL_VERSION(4,11,0))
+#define KERNEL_SUPPORTS_ALIASES         (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
+
 struct intrepid_pending_tx_info {
 	int tx_box_index;
 	int count;
@@ -345,13 +349,13 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 
 	dev->base_addr          = i;
 	dev->flags             |= IFF_ECHO;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
+#if KERNEL_CHECKS_MTU_RANGE
 	dev->min_mtu            = CAN_MTU;
 	dev->max_mtu            = MAX_MTU;
 #endif
 	dev->mtu                = CANFD_MTU; /* TODO: Check CAN-FD support from usermode daemon */
 	dev->netdev_ops         = &intrepid_netdevice_ops;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
+#if KERNEL_SUPPORTS_ALIASES
 	if (requestedName && ((aliasLen = strlen(requestedName)) > 0) && aliasLen < IFALIASZ) {
 		dev->ifalias = kzalloc(sizeof(struct dev_ifalias) + aliasLen + 1, GFP_KERNEL);
 		if (dev->ifalias == NULL) {
@@ -637,7 +641,7 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
  * Starting in kernel version 4.11, (struct vm_operations_struct *)->fault() no
  * longer takes the vma parameter (since it resides in vmf) */
 static int intrepid_vm_fault(
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
+#if KERNEL_FAULT_TAKES_VMA
 	struct vm_area_struct *vma,
 #endif
 	struct vm_fault *vmf)
