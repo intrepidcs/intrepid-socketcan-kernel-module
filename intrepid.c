@@ -349,6 +349,7 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	dev->max_mtu            = CANFD_MTU;
 	dev->mtu                = CANFD_MTU; /* TODO: Check CAN-FD support from usermode daemon */
 	dev->netdev_ops         = &intrepid_netdevice_ops;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
 	if (requestedName && ((aliasLen = strlen(requestedName)) > 0) && aliasLen < IFALIASZ) {
 		dev->ifalias = kzalloc(sizeof(struct dev_ifalias) + aliasLen + 1, GFP_KERNEL);
 		if (dev->ifalias == NULL) {
@@ -358,6 +359,7 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 			pr_info("intrepid: %s alias set to %s\n", dev->name, requestedName);
 		}
 	}
+#endif
 	ics                  = netdev_priv(dev);
 	ics->dev             = dev;
 	ics->is_stopped      = 0;
