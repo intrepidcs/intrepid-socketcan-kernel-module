@@ -345,8 +345,10 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 
 	dev->base_addr          = i;
 	dev->flags             |= IFF_ECHO;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
 	dev->min_mtu            = CAN_MTU;
 	dev->max_mtu            = MAX_MTU;
+#endif
 	dev->mtu                = CANFD_MTU; /* TODO: Check CAN-FD support from usermode daemon */
 	dev->netdev_ops         = &intrepid_netdevice_ops;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
