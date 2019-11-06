@@ -57,7 +57,7 @@
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 2
 #define KO_MINOR 0
-#define KO_PATCH 2
+#define KO_PATCH 3
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
@@ -92,6 +92,11 @@ MODULE_VERSION(KO_VERSION);
 #define KERNEL_CHECKS_MTU_RANGE         (LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0))
 #define KERNEL_FAULT_TAKES_VMA          (LINUX_VERSION_CODE <  KERNEL_VERSION(4,11,0))
 #define KERNEL_SUPPORTS_ALIASES         (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
+#define KERNEL_DEFINES_VM_FAULT_T       (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
+
+#if KERNEL_DEFINES_VM_FAULT_T == 0
+typedef int vm_fault_t;
+#endif
 
 struct intrepid_pending_tx_info {
 	int tx_box_index;
@@ -651,7 +656,7 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
  *
  * Starting in kernel version 4.11, (struct vm_operations_struct *)->fault() no
  * longer takes the vma parameter (since it resides in vmf) */
-static int intrepid_vm_fault(
+static vm_fault_t intrepid_vm_fault(
 #if KERNEL_FAULT_TAKES_VMA
 	struct vm_area_struct *vma,
 #endif
