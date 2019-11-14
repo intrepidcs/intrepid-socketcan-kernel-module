@@ -57,7 +57,7 @@
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 2
 #define KO_MINOR 0
-#define KO_PATCH 3
+#define KO_PATCH 4
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
@@ -273,6 +273,7 @@ static int intrepid_netdevice_stop(struct net_device *dev)
 
 	spin_lock_bh(&ics->lock);
 	netif_stop_queue(dev);
+	netif_carrier_off(dev);
 	spin_unlock_bh(&ics->lock);
 
 	return 0;
@@ -281,6 +282,7 @@ static int intrepid_netdevice_stop(struct net_device *dev)
 static int intrepid_netdevice_open(struct net_device *dev)
 {
 	netif_start_queue(dev);
+	netif_carrier_on(dev);
 	return 0;
 }
 

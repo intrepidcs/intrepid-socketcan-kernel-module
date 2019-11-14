@@ -1,3 +1,6 @@
+v2.0.4
+	Ensure carrier is up on new kernels which require it
+
 v2.0.3
 	Add support for kernels 5.1+
 		Tested on 5.3.0 (Ubuntu 19.10)
