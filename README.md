@@ -4,7 +4,7 @@ This is the kernel object portion of the Intrepid Control Systems SocketCAN supp
 
 First, install the necessary dependencies for building kernel modules.
 
-On Ubuntu, this is acomplished by running `sudo apt install linux-headers-generic build-essential gcc git`
+On Ubuntu, this is accomplished by running `sudo apt install linux-headers-generic build-essential gcc git`
 
 Clone this repository by running `git clone https://github.com/intrepidcs/intrepid-socketcan-kernel-module.git`
 
