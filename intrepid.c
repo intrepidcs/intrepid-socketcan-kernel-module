@@ -471,7 +471,10 @@ static int intrepid_fill_can_frame_from_neomessage(
 	if (msg->status.remoteFrame)
 		cf->can_id |= CAN_RTR_FLAG;
 
-	cf->can_dlc = get_can_dlc(msg->length);
+	if (unlikely(msg->length > 8))
+		return -1;
+
+	cf->can_dlc = msg->length;
 	memcpy(cf->data, data, cf->can_dlc);
 
 	stats->rx_bytes += cf->can_dlc;
