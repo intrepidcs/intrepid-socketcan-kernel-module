@@ -838,7 +838,7 @@ exit:
 	return ret;
 
 free_net_devices:
-	kzfree(net_devices);
+	kfree(net_devices);
 free_shared_mem:
 	vfree(shared_mem);
 	return ret;
