@@ -1,3 +1,8 @@
+v2.0.5
+	Add support for kernels 5.9+
+		Tested on 5.11.0-rc5
+	CAN frames with length > 8 from userspace are rejected rather than truncated
+
 v2.0.4
 	Ensure carrier is up on new kernels which require it
 
