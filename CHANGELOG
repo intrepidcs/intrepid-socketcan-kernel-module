@@ -1,3 +1,9 @@
+v2.1.0
+	Implement proper functionality for echoing transmits
+	Transmit errors are now reported properly
+	Transmit byte count is now reported properly
+	Use with icsscand >= v2.1.0 for full echo support
+
 v2.0.5
 	Add support for kernels 5.9+
 		Tested on 5.11.0-rc5
