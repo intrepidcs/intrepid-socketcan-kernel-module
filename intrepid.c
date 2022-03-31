@@ -1,7 +1,7 @@
 /*
  * intrepid.c - Netdevice driver for Intrepid CAN/Ethernet devices
  *
- * Copyright (c) 2016-2019 Intrepid Control Systems, Inc.
+ * Copyright (c) 2016-2022 Intrepid Control Systems, Inc.
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
