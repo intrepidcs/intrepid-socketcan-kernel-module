@@ -16,12 +16,12 @@ typedef union {
 		uint32_t extendedFrame : 1;
 		uint32_t remoteFrame : 1;
 		uint32_t crcError : 1;
-		uint32_t canErrorPassive : 1;
+		uint32_t canErrorPassive : 1; // Occupies the same space as headerCRCError
 		uint32_t incompleteFrame : 1;
 		uint32_t lostArbitration : 1;
 		uint32_t undefinedError : 1;
 		uint32_t canBusOff : 1;
-		uint32_t canErrorWarning : 1;
+		uint32_t canBusRecovered : 1;
 		uint32_t canBusShortedPlus : 1;
 		uint32_t canBusShortedGround : 1;
 		uint32_t checksumError : 1;
@@ -98,6 +98,10 @@ typedef union {
 #pragma warning(pop)
 #endif
 
+typedef uint16_t neonetid_t;
+typedef uint8_t neonettype_t;
+typedef uint16_t neomessagetype_t;
+
 #define ICSNEO_NETWORK_TYPE_INVALID ((uint8_t)0)
 #define ICSNEO_NETWORK_TYPE_INTERNAL ((uint8_t)1) // Used for statuses that don't actually need to be transferred to the client application
 #define ICSNEO_NETWORK_TYPE_CAN ((uint8_t)2)
@@ -109,42 +113,73 @@ typedef union {
 #define ICSNEO_NETWORK_TYPE_OTHER ((uint8_t)0xFF)
 
 typedef struct {
-	neomessage_statusbitfield_t status;
+	uint8_t _reserved1[16];
 	uint64_t timestamp;
-	uint64_t timestampReserved;
-	const uint8_t* data;
-	size_t length;
-	uint8_t header[4];
-	uint16_t netid;
-	uint8_t type;
-	uint8_t reserved[17];
+	uint64_t _reservedTimestamp;
+	uint8_t _reserved2[sizeof(size_t) * 2 + 7 + sizeof(neonetid_t) + sizeof(neonettype_t)];
+	neomessagetype_t messageType;
+	uint8_t _reserved3[12];
 } neomessage_t; // 72 bytes total
 // Any time you add another neomessage_*_t type, make sure to add it to the static_asserts below!
 
 typedef struct {
 	neomessage_statusbitfield_t status;
 	uint64_t timestamp;
-	uint64_t timestampReserved;
+	uint64_t _reservedTimestamp;
+	const uint8_t* data;
+	size_t length;
+	uint8_t header[4];
+	neonetid_t netid;
+	neonettype_t type;
+	uint8_t _reserved0;
+	uint16_t description;
+	neomessagetype_t messageType;
+	uint8_t _reserved1[12];
+} neomessage_frame_t;
+
+typedef struct {
+	neomessage_statusbitfield_t status;
+	uint64_t timestamp;
+	uint64_t _reservedTimestamp;
 	const uint8_t* data;
 	size_t length;
 	uint32_t arbid;
-	uint16_t netid;
-	uint8_t type;
+	neonetid_t netid;
+	neonettype_t type;
 	uint8_t dlcOnWire;
-	uint8_t reserved[16];
+	uint16_t description;
+	neomessagetype_t messageType;
+	uint8_t _reserved1[12];
 } neomessage_can_t;
 
 typedef struct {
 	neomessage_statusbitfield_t status;
 	uint64_t timestamp;
-	uint64_t timestampReserved;
+	uint64_t _reservedTimestamp;
+	size_t _reserved2[2];
+	uint8_t transmitErrorCount;
+	uint8_t receiveErrorCount;
+	uint8_t _reserved3[5];
+	neonetid_t netid;
+	neonettype_t type;
+	neomessagetype_t messageType;
+	uint8_t _reserved4[12];
+} neomessage_can_error_t;
+
+typedef struct {
+	neomessage_statusbitfield_t status;
+	uint64_t timestamp;
+	uint64_t _reservedTimestamp;
 	const uint8_t* data;
 	size_t length;
 	uint8_t preemptionFlags;
-	uint8_t reservedHeader[3];
-	uint16_t netid;
-	uint8_t type;
-	uint8_t reserved[17];
+	uint8_t _reservedHeader[3];
+	neonetid_t netid;
+	neonettype_t type;
+	uint8_t _reserved0;
+	uint16_t description;
+	neomessagetype_t messageType;
+	uint8_t _reserved1[12];
 } neomessage_eth_t;
 
 #pragma pack(pop)

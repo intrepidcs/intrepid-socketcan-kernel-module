@@ -56,8 +56,8 @@
 
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 2
-#define KO_MINOR 0
-#define KO_PATCH 5
+#define KO_MINOR 1
+#define KO_PATCH 0
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
@@ -111,6 +111,7 @@ struct intrepid_netdevice {
 	spinlock_t              lock;
 	int                     is_stopped;
 	unsigned char           *from_user;
+	uint8_t                 tx_idx;
 };
 
 static int                      is_open;
@@ -134,6 +135,27 @@ static spinlock_t               tx_box_lock;
 	(shared_mem + (RX_BOX_SIZE * DEVICE_INDEX))
 #define GET_TX_BOX(BOX_INDEX) \
 	(shared_mem + (SHARED_MEM_SIZE / 2) + (BOX_INDEX * TX_BOX_SIZE))
+#define MAX_TX (0x100)
+#define DESC_OFFSET (2)
+
+static uint16_t intrepid_next_tx_description(
+	struct intrepid_netdevice* ics,
+	int* idx_out)
+{
+	/* we offset the description so that we know 0 is not us transmitting */
+	uint16_t description = ics->tx_idx + DESC_OFFSET;
+	*idx_out = ics->tx_idx;
+	ics->tx_idx++;
+	return description;
+}
+
+static int intrepid_description_to_idx(uint16_t description)
+{
+	if (description < DESC_OFFSET || description >= DESC_OFFSET + MAX_TX)
+		return -1;
+
+	return description - DESC_OFFSET;
+}
 
 /* Returns 1 when we would not have enough space to hold another message of `size` */
 static inline int intrepid_tx_box_no_space_for(size_t size)
@@ -182,15 +204,13 @@ static void intrepid_pause_all_queues(void)
 static netdev_tx_t intrepid_netdevice_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	int ret = NETDEV_TX_OK;
-	struct net_device_stats *stats = &dev->stats;
 	struct intrepid_netdevice *ics = netdev_priv(dev);
 	struct canfd_frame *cf = (struct canfd_frame*)skb->data;
 	bool fd = can_is_canfd_skb(skb);
 	bool needs_unlock = false;
+	bool consumed = false;
+	int tx_idx;
 	neomessage_can_t msg = {0};
-
-	stats->tx_packets++;
-	stats->tx_bytes = cf->len;
 
 	if (can_dropped_invalid_skb(dev, skb)) {
 		pr_info("intrepid: dropping invalid frame on %s\n", dev->name);
@@ -237,6 +257,7 @@ static netdev_tx_t intrepid_netdevice_xmit(struct sk_buff *skb, struct net_devic
 
 	msg.length = cf->len;
 	msg.netid = dev->base_addr;
+	msg.type = ICSNEO_NETWORK_TYPE_CAN;
 
 	if (intrepid_tx_box_no_space_for(sizeof(neomessage_can_t) + msg.length)) {
 		/* This should never happen, the queue should be paused before this */
@@ -246,6 +267,10 @@ static netdev_tx_t intrepid_netdevice_xmit(struct sk_buff *skb, struct net_devic
 		ret = NETDEV_TX_BUSY;
 		goto exit;
 	}
+
+	msg.description = intrepid_next_tx_description(ics, &tx_idx);
+	can_put_echo_skb(skb, dev, tx_idx, msg.length);
+	consumed = true;
 
 	/* Copy the message into the usermode box */
 	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], &msg, sizeof(neomessage_can_t));
@@ -259,7 +284,7 @@ static netdev_tx_t intrepid_netdevice_xmit(struct sk_buff *skb, struct net_devic
 		intrepid_pause_all_queues();
 
 exit:
-	if(ret == NETDEV_TX_OK)
+	if(ret == NETDEV_TX_OK && !consumed)
 		consume_skb(skb);
 	wake_up_interruptible(&tx_wait);
 	if(needs_unlock)
@@ -270,6 +295,8 @@ exit:
 static int intrepid_netdevice_stop(struct net_device *dev)
 {
 	struct intrepid_netdevice *ics = netdev_priv(dev);
+
+	close_candev(dev);
 
 	spin_lock_bh(&ics->lock);
 	netif_stop_queue(dev);
@@ -350,7 +377,7 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 		goto exit;
 	}
 
-	dev = alloc_candev(sizeof(*ics), 1);
+	dev = alloc_candev(sizeof(*ics), MAX_TX);
 	if (!dev) {
 		pr_alert("intrepid: Could not allocate candev\n");
 		goto exit;
@@ -380,6 +407,7 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	ics->dev             = dev;
 	ics->is_stopped      = 0;
 	ics->from_user       = GET_RX_BOX(i); /* incoming rx messages */
+	ics->tx_idx          = 0;
 
 	spin_lock_init(&ics->lock);
 
@@ -483,22 +511,73 @@ static int intrepid_fill_can_frame_from_neomessage(
 	return 0;
 }
 
+/* Returns true if this message was handled as a transmit receipt.
+ * If false is returned, this message should be handled as a receive
+ * message, regardless of the transmit flag.
+ */
+static bool handle_transmit_receipt(
+	struct net_device *device,
+	const neomessage_can_t *msg,
+	const uint8_t *data,
+	struct net_device_stats *stats)
+{
+	int length;
+	int tx_idx;
+
+	if (!msg->status.transmitMessage)
+		return false;
+
+	tx_idx = intrepid_description_to_idx(msg->description);
+
+	/* not transmitted by us, maybe by CoreMini */
+	/* just handle it as a receive */
+	if (tx_idx < 0)
+		return false;
+
+	/* unsuccessful transmits */
+	/* stats are handled in intrepid_fill_canerr_frame_from_neomessage */
+	if (msg->status.globalError) {
+		can_free_echo_skb(device, tx_idx, NULL);
+		return false;
+	}
+
+	length = can_get_echo_skb(device, tx_idx, NULL);
+	stats->tx_packets++;
+	stats->tx_bytes += length;
+	return true;
+}
+
 static struct sk_buff *intrepid_skb_from_neomessage(
 	struct net_device *device,
-	const neomessage_t *msg,
+	const neomessage_frame_t *msg_generic,
 	const uint8_t *data,
 	struct net_device_stats *stats)
 {
 	struct sk_buff *skb = NULL;
 	struct canfd_frame* cf = NULL;
+	const neomessage_can_t* msg = NULL;
 	int ret = 0;
 
 	/* input validation */
-	if (unlikely(device == NULL || msg == NULL || data == NULL || stats == NULL)) {
+	if (unlikely(device == NULL || msg_generic == NULL || data == NULL || stats == NULL)) {
 		stats->rx_dropped++;
 		pr_warn("intrepid: Dropping message on %s, skb from neomessage input validation failed", device->name);
-		goto fail;
+		goto out;
 	}
+
+	if (unlikely(msg_generic->type != ICSNEO_NETWORK_TYPE_CAN)) {
+		stats->rx_dropped++;
+		pr_warn("intrepid: Dropping message on %s, wrong type %d", device->name, (int)msg_generic->type);
+		goto out;
+	}
+
+	msg = (const neomessage_can_t*)msg_generic;
+
+	/* if this message is handled as a transmit receipt,
+	 * don't turn it into a receive skb here.
+	 */
+	if (handle_transmit_receipt(device, msg, data, stats))
+		goto out;
 
 	if (msg->status.globalError)
 		skb = alloc_can_err_skb(device, (struct can_frame**)&cf);
@@ -510,7 +589,7 @@ static struct sk_buff *intrepid_skb_from_neomessage(
 	if (unlikely(skb == NULL)) {
 		stats->rx_dropped++;
 		pr_warn("intrepid: Dropping message on %s, skb allocation failed", device->name);
-		goto fail;
+		goto out;
 	}
 
 	switch(msg->type) {
@@ -535,16 +614,16 @@ static struct sk_buff *intrepid_skb_from_neomessage(
 			break;
 		default:
 			pr_warn("intrepid: Dropping message on %s, invalid type %d", device->name, msg->type);
-			goto fail;
+			goto out;
 	}
 
 
 	if (unlikely(ret != 0)) {
 		pr_warn("intrepid: Dropping message on %s, frame fill failed", device->name);
-		goto fail;
+		goto out;
 	}
 
-fail:
+out:
 	return skb;
 }
 
@@ -569,19 +648,19 @@ static int intrepid_read_messages(int device_index, unsigned int count)
 	 * converting neomessage_t to a CAN sk_buff */
 
 	while (count--) {
-		const neomessage_t *msg;
+		const neomessage_frame_t *msg;
 		const uint8_t *data;
 		struct sk_buff *skb;
 		int ret = 0;
 
-		msg = (const neomessage_t*)currentPosition;
-		currentPosition += sizeof(neomessage_t);
+		msg = (const neomessage_frame_t*)currentPosition;
+		currentPosition += sizeof(neomessage_frame_t);
 		data = currentPosition;
 		currentPosition += msg->length;
 
 		/* pass along the converted message to the kernel for dispatch */
 		skb = intrepid_skb_from_neomessage(device, msg, data, stats);
-		if (likely(skb != NULL))
+		if (skb != NULL)
 			ret = netif_rx(skb);
 
 		if (ret == NET_RX_DROP)
