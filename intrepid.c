@@ -93,6 +93,7 @@ MODULE_VERSION(KO_VERSION);
 #define KERNEL_FAULT_TAKES_VMA          (LINUX_VERSION_CODE <  KERNEL_VERSION(4,11,0))
 #define KERNEL_SUPPORTS_ALIASES         (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
 #define KERNEL_DEFINES_VM_FAULT_T       (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
+#define KERNEL_CAN_ECHO_TRACKS_LEN      (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0))
 
 #if KERNEL_DEFINES_VM_FAULT_T == 0
 typedef int vm_fault_t;
@@ -269,7 +270,11 @@ static netdev_tx_t intrepid_netdevice_xmit(struct sk_buff *skb, struct net_devic
 	}
 
 	msg.description = intrepid_next_tx_description(ics, &tx_idx);
-	can_put_echo_skb(skb, dev, tx_idx, msg.length);
+	can_put_echo_skb(skb, dev, tx_idx
+#if KERNEL_CAN_ECHO_TRACKS_LEN
+		, msg.length
+#endif
+	);
 	consumed = true;
 
 	/* Copy the message into the usermode box */
@@ -537,11 +542,19 @@ static bool handle_transmit_receipt(
 	/* unsuccessful transmits */
 	/* stats are handled in intrepid_fill_canerr_frame_from_neomessage */
 	if (msg->status.globalError) {
-		can_free_echo_skb(device, tx_idx, NULL);
+		can_free_echo_skb(device, tx_idx
+#if KERNEL_CAN_ECHO_TRACKS_LEN
+			, NULL
+#endif
+		);
 		return false;
 	}
 
-	length = can_get_echo_skb(device, tx_idx, NULL);
+	length = can_get_echo_skb(device, tx_idx
+#if KERNEL_CAN_ECHO_TRACKS_LEN
+		, NULL
+#endif
+	);
 	stats->tx_packets++;
 	stats->tx_bytes += length;
 	return true;
