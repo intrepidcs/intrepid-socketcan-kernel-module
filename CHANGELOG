@@ -1,3 +1,7 @@
+v2.1.1
+	Fix support for kernels <5.12
+		Tested on 5.4.0
+
 v2.1.0
 	Implement proper functionality for echoing transmits
 	Transmit errors are now reported properly
