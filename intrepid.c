@@ -945,7 +945,7 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 		case SIOCSREMOVECANIF:
 			ret = intrepid_remove_can_if (arg);
 			break;
-		case SIOCSADDETHIF:
+		case SIOCSADDETHIF: {
 			struct intrepid_netdevice *result = NULL;
 #if KERNEL_SUPPORTS_ALIASES
 			char requestedNameBuffer[IFALIASZ] = {0};
@@ -962,6 +962,7 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 			ret = intrepid_add_eth_if(&result, NULL);
 #endif
 			break;
+		}
 		case SIOCSREMOVEETHIF:
 			ret = intrepid_remove_eth_if (arg);
 			break;
