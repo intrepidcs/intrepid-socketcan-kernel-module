@@ -976,13 +976,7 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 			ret = KO_VERSION_INT;
 			break;
 		case SIOCGCLIENTVEROK:
-			/* Here we can do checks to see if the usermode daemon is
-			 * a compatible version with us. We don't enforce anything
-			 * on the kernel side. icsscand v2.0.0 will not work with
-			 * older kernels, and would display an obscure error, thus
-			 * we want to ask the user to update to v2.0.1 or later
-			 */
-			if (VER_MAJ_FROM_INT(arg) == 3 && (VER_MIN_FROM_INT(arg) > 0 || VER_PATCH_FROM_INT(arg) >= 1))
+			if (VER_MAJ_FROM_INT(arg) == 3 && VER_MIN_FROM_INT(arg) == 0 && VER_PATCH_FROM_INT(arg) >= 0)
 				ret = 0; /* ok to start */
 			else
 				ret = 1;
