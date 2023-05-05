@@ -1,4 +1,4 @@
-Version 2.1.0
+Version 3.0.1
 
 This is the kernel object portion of the Intrepid Control Systems SocketCAN support. For SocketCAN to work with Intrepid devices you will need to have this kernel object loaded on your system. Once the module is built and loaded run [icsscand](https://github.com/intrepidcs/icsscand) to turn on SocketCAN support.
 

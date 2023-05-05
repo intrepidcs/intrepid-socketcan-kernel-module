@@ -1,7 +1,7 @@
 /*
  * intrepid.c - Netdevice driver for Intrepid CAN/Ethernet devices
  *
- * Copyright (c) 2016-2022 Intrepid Control Systems, Inc.
+ * Copyright (c) 2016-2023 Intrepid Control Systems, Inc.
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -58,7 +58,7 @@
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 3
 #define KO_MINOR 0
-#define KO_PATCH 0
+#define KO_PATCH 1
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
