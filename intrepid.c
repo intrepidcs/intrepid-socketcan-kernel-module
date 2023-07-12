@@ -58,7 +58,7 @@
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 3
 #define KO_MINOR 0
-#define KO_PATCH 1
+#define KO_PATCH 2
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
@@ -74,7 +74,7 @@ MODULE_VERSION(KO_VERSION);
 
 #define INTREPID_DEVICE_NAME            "intrepid_netdevice"
 #define INTREPID_CLASS_NAME             "intrepid"
-#define MAX_NET_DEVICES                 16
+#define MAX_NET_DEVICES                 64
 #define SHARED_MEM_SIZE                 0x400000
 
 #define SIOCSADDCANIF			0x3001
