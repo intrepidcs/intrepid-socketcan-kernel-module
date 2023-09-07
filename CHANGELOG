@@ -1,3 +1,6 @@
+v3.0.3
+	Update daemon version requirement to 3.1.*
+
 v3.0.2
 	Bump maximum device count to 64
 

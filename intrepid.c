@@ -58,7 +58,7 @@
 #define KO_DESC "Netdevice driver for Intrepid CAN/Ethernet devices"
 #define KO_MAJOR 3
 #define KO_MINOR 0
-#define KO_PATCH 2
+#define KO_PATCH 3
 #define KO_VERSION str(KO_MAJOR) "." str(KO_MINOR) "." str(KO_PATCH)
 #define KO_VERSION_INT (KO_MAJOR << 16) | (KO_MINOR << 8) | KO_PATCH
 
@@ -976,7 +976,7 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 			ret = KO_VERSION_INT;
 			break;
 		case SIOCGCLIENTVEROK:
-			if (VER_MAJ_FROM_INT(arg) == 3 && VER_MIN_FROM_INT(arg) == 0 && VER_PATCH_FROM_INT(arg) >= 0)
+			if (VER_MAJ_FROM_INT(arg) == 3 && VER_MIN_FROM_INT(arg) == 1 && VER_PATCH_FROM_INT(arg) >= 0)
 				ret = 0; /* ok to start */
 			else
 				ret = 1;
