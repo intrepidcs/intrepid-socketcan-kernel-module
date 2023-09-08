@@ -1156,7 +1156,11 @@ static __init int intrepid_init(void)
 		return -1;
 	}
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
 	intrepid_dev_class = class_create(THIS_MODULE, INTREPID_CLASS_NAME);
+#else
+	intrepid_dev_class = class_create(INTREPID_CLASS_NAME);
+#endif
 	if (IS_ERR(intrepid_dev_class)) {
 		ret = PTR_ERR(intrepid_dev_class);
 		pr_alert("intrepid: failed to create device class, got %d\n", ret);
