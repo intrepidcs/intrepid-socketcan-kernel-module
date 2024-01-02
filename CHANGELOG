@@ -1,3 +1,8 @@
+v3.0.4
+	Update copyright
+	Add Fedora package requirements to README
+	Fix for newer 6.4.x Kernel, class_create() sig changed (Doug Potts <dpotts@genrad.com>)
+
 v3.0.3
 	Update daemon version requirement to 3.1.*
 
