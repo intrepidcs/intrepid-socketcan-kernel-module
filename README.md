@@ -2,9 +2,9 @@ Version 3.0.3
 
 This is the kernel object portion of the Intrepid Control Systems SocketCAN support. For SocketCAN to work with Intrepid devices you will need to have this kernel object loaded on your system. Once the module is built and loaded run [icsscand](https://github.com/intrepidcs/icsscand) to turn on SocketCAN support.
 
-First, install the necessary dependencies for building kernel modules.
-
-On Ubuntu, this is accomplished by running `sudo apt install linux-headers-generic build-essential gcc git`
+First, install the necessary dependencies for building kernel modules:
+- Ubuntu: `sudo apt install linux-headers-generic build-essential gcc git`
+- Fedora: `sudo dnf install git kernel-devel-matched`
 
 Clone this repository by running `git clone https://github.com/intrepidcs/intrepid-socketcan-kernel-module.git`
 
