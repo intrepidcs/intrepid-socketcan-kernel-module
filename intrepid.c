@@ -1118,6 +1118,17 @@ static __init int intrepid_init(void)
 	int ret;
 	pr_info("intrepid: %s %s\n", KO_DESC, KO_VERSION);
 
+	BUILD_BUG_ON_MSG(sizeof(neomessage_t) != (56 + sizeof(void*) + sizeof(size_t)),
+		"neomessage_t size is incorrect!");
+	BUILD_BUG_ON_MSG(sizeof(neomessage_frame_t) != sizeof(neomessage_t),
+		"All types of neomessage_t must be the same size! (Base frame is not)");
+	BUILD_BUG_ON_MSG(sizeof(neomessage_can_t) != sizeof(neomessage_t),
+		"All types of neomessage_t must be the same size! (CAN is not)");
+	BUILD_BUG_ON_MSG(sizeof(neomessage_can_error_t) != sizeof(neomessage_t),
+		"All types of neomessage_t must be the same size! (CAN error is not)");
+	BUILD_BUG_ON_MSG(sizeof(neomessage_eth_t) != sizeof(neomessage_t),
+		"All types of neomessage_t must be the same size! (Ethernet is not)");
+
 	is_open = 0;
 
 	/* this is the shared memory used to transfer between us and the user daemon */
