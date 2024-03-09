@@ -86,6 +86,7 @@ MODULE_VERSION(KO_VERSION);
 #define SIOCGMAXIFACES			0x3007
 #define SIOCGVERSION			0x3008
 #define SIOCGCLIENTVEROK		0x3009
+#define SIOCSBAUDRATE			0x300A
 
 /* This is true until we have Ethernet support
  * It is used to stop the netif queues before we have to return NETDEV_TX_BUSY
@@ -114,6 +115,7 @@ struct intrepid_netdevice {
 	int                     is_stopped;
 	unsigned char           *from_user;
 	uint8_t                 tx_idx;
+	int			bitrate_changed;
 };
 
 static int                      is_open;
@@ -419,6 +421,68 @@ static int intrepid_remove_can_if(int index)
 	return 0;
 }
 
+static int intrepid_set_bittiming(struct net_device *netdev)
+{
+	struct intrepid_netdevice *dev = netdev_priv(netdev);
+	struct can_bittiming *bt = &dev->can.bittiming;
+
+	dev_dbg(&netdev->dev, "bitrate %d sample_point %d tq %d sjw %d phase1 %d phase2 %d prop %d brp %d",
+		bt->bitrate, bt->sample_point, bt->tq, bt->sjw, bt->phase_seg1, bt->phase_seg2, bt->prop_seg, bt->brp);
+
+	dev->bitrate_changed = 1;
+	wake_up_interruptible(&tx_wait);
+	return 0;
+}
+
+static int intrepid_set_data_bittiming(struct net_device *netdev)
+{
+	struct intrepid_netdevice *dev = netdev_priv(netdev);
+	struct can_bittiming *bt = &dev->can.data_bittiming;
+
+	dev_dbg(&netdev->dev, "bitrate %d sample_point %d tq %d sjw %d phase1 %d phase2 %d prop %d brp %d",
+		bt->bitrate, bt->sample_point, bt->tq, bt->sjw, bt->phase_seg1, bt->phase_seg2, bt->prop_seg, bt->brp);
+
+	dev->bitrate_changed = 1;
+	wake_up_interruptible(&tx_wait);
+	return 0;
+}
+
+static int intrepid_bitrates[] = {
+	20000,
+	33000,
+	50000,
+	62000,
+	83000,
+	100000,
+	125000,
+	250000,
+	500000,
+	666000,
+	800000,
+	1000000
+};
+
+static int intrepid_data_bitrates[] = {
+	20000,
+	33000,
+	50000,
+	62000,
+	83000,
+	100000,
+	125000,
+	250000,
+	500000,
+	666000,
+	800000,
+	1000000,
+	2000000,
+	4000000,
+	5000000,
+	6667000,
+	8000000,
+	10000000
+};
+
 static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *requestedName)
 {
 	// The `requestedName` parameter is always NULL if KERNEL_SUPPORTS_ALIASES is false
@@ -473,6 +537,16 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	ics->is_stopped      = 0;
 	ics->from_user       = GET_RX_BOX(i); /* incoming rx messages */
 	ics->tx_idx          = 0;
+
+	if (VER_MIN_FROM_INT(client_version) > 1) {
+		ics->can.bitrate_const = intrepid_bitrates;
+		ics->can.bitrate_const_cnt = ARRAY_SIZE(intrepid_bitrates);
+		ics->can.data_bitrate_const = intrepid_data_bitrates;
+		ics->can.data_bitrate_const_cnt = ARRAY_SIZE(intrepid_data_bitrates);
+		ics->can.do_set_bittiming = intrepid_set_bittiming;
+		ics->can.do_set_data_bittiming = intrepid_set_data_bittiming;
+		ics->can.ctrlmode_supported = CAN_CTRLMODE_FD;
+	}
 
 	spin_lock_init(&ics->lock);
 
@@ -947,6 +1021,22 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 		case SIOCSREMOVECANIF:
 			ret = intrepid_remove_can_if (arg);
 			break;
+		case SIOCSBAUDRATE: {
+			struct baudrate_info {
+				int handle;
+				int64_t baudrates[2];
+			} info;
+			ret = copy_from_user(&info, (void __user*)arg, sizeof(info));
+			if (ret)
+				break;
+			struct net_device *device = intrepid_get_dev_by_index(info.handle);
+			if (device == NULL)
+				break;
+			struct intrepid_netdevice *ics = netdev_priv(device);
+			ics->can.bittiming.bitrate = info.baudrates[0];
+			ics->can.data_bittiming.bitrate = info.baudrates[1];
+			break;
+		}
 		case SIOCSADDETHIF: {
 			struct intrepid_netdevice *result = NULL;
 #if KERNEL_SUPPORTS_ALIASES
@@ -1056,6 +1146,33 @@ static int intrepid_dev_release(struct inode *ip, struct file *fp)
 	return 0;
 }
 
+/* Re-use the pending_tx_info struct to send changed bitrates to userland
+ * Set the box index to -(dev_id) and encode the rest of the data in the count
+ * and bytes fields.
+ * count is the bitrate value
+ * bytes is the data bitrate value. */
+static int check_bitrate_change(struct intrepid_pending_tx_info *info)
+{
+	int i;
+	struct intrepid_netdevice *ics;
+
+	for (i = 0; i < MAX_NET_DEVICES; i++) {
+		if (net_devices[i] == NULL || net_devices[i]->type != ARPHRD_CAN)
+			continue;
+		ics = netdev_priv(net_devices[i]);
+
+		if (ics->bitrate_changed) {
+			info->tx_box_index = -(i + 1);
+			info->count = ics->can.bittiming.bitrate;
+			info->bytes = ics->can.data_bittiming.bitrate;
+			ics->bitrate_changed = 0;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 /* usermode uses read() to get the current size of the tx buffer. we use a ping pong buffer
  * so the user doesn't have to worry about the data changing out from under them while
  * still avoiding a full copy to user. the ping pong flips on every call to this func */
@@ -1066,6 +1183,15 @@ static ssize_t intrepid_dev_read(struct file *fp, char *buffer, size_t len, loff
 
 	if (len < sizeof(info))
 		return -EFAULT;
+
+	/* check if we have to send a bitrate change */
+	if (VER_MIN_FROM_INT(client_version) > 1) {
+		if (check_bitrate_change(&info)) {
+			if (copy_to_user(buffer, &info, sizeof(info)))
+				return -EFAULT;
+			return sizeof(info);
+		}
+	}
 
 	spin_lock_bh(&tx_box_lock);
 
@@ -1100,6 +1226,18 @@ static unsigned int intrepid_dev_poll(struct file *fp, poll_table *wait)
 
 	if (tx_box_count[current_tx_box] > 0)
 		return POLLIN | POLLRDNORM;
+
+	if (VER_MIN_FROM_INT(client_version) > 1) {
+		int i;
+		for (i = 0; i < MAX_NET_DEVICES; i++) {
+			if (net_devices[i] == NULL || net_devices[i]->type != ARPHRD_CAN)
+				continue;
+			struct intrepid_netdevice *ics = netdev_priv(net_devices[i]);
+
+			if (ics->bitrate_changed)
+				return POLLIN | POLLRDNORM;
+		}
+	}
 
 	return 0;
 }
