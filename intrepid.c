@@ -108,6 +108,7 @@ struct intrepid_pending_tx_info {
 };
 
 struct intrepid_netdevice {
+	struct can_priv         can;
 	struct net_device       *dev;
 	spinlock_t              lock;
 	int                     is_stopped;
