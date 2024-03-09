@@ -118,6 +118,7 @@ struct intrepid_netdevice {
 
 static int                      is_open;
 static int                      major_number;
+static int                      client_version;
 static unsigned char            *shared_mem;
 static struct class             *intrepid_dev_class;
 static struct device            *intrepid_dev;
@@ -977,7 +978,8 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 			ret = KO_VERSION_INT;
 			break;
 		case SIOCGCLIENTVEROK:
-			if (VER_MAJ_FROM_INT(arg) == 3 && VER_MIN_FROM_INT(arg) == 1 && VER_PATCH_FROM_INT(arg) >= 0)
+			client_version = arg;
+			if (VER_MAJ_FROM_INT(arg) == 3 && VER_MIN_FROM_INT(arg) >= 1 && VER_PATCH_FROM_INT(arg) >= 0)
 				ret = 0; /* ok to start */
 			else
 				ret = 1;
