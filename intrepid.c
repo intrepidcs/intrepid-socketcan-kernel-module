@@ -545,8 +545,9 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 		ics->can.data_bitrate_const_cnt = ARRAY_SIZE(intrepid_data_bitrates);
 		ics->can.do_set_bittiming = intrepid_set_bittiming;
 		ics->can.do_set_data_bittiming = intrepid_set_data_bittiming;
-		ics->can.ctrlmode_supported = CAN_CTRLMODE_FD;
 	}
+	ics->can.state = CAN_STATE_ERROR_ACTIVE;
+	ics->can.ctrlmode_supported = CAN_CTRLMODE_FD;
 
 	spin_lock_init(&ics->lock);
 
