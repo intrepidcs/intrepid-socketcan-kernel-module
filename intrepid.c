@@ -87,6 +87,8 @@ MODULE_VERSION(KO_VERSION);
 #define SIOCGVERSION			0x3008
 #define SIOCGCLIENTVEROK		0x3009
 #define SIOCSBAUDRATE			0x300A
+#define SIOCSERRCOUNT           0x300B
+#define SIOCSIFSETTINGS         0x300C
 
 /* This is true until we have Ethernet support
  * It is used to stop the netif queues before we have to return NETDEV_TX_BUSY
@@ -115,7 +117,36 @@ struct intrepid_netdevice {
 	int                     is_stopped;
 	unsigned char           *from_user;
 	uint8_t                 tx_idx;
-	int			bitrate_changed;
+	/* for CAN only */
+	int						bitrate_changed;
+	struct can_bittiming_const	 bittiming_const;
+	struct can_bittiming_const	 data_bittiming_const;
+	struct can_berr_counter berr_counter;
+};
+
+#define ICS_MAGIC 0x49435343 // ICSC
+
+struct add_can_if_info {
+	char alias[IFALIASZ];
+	u32 magic;
+	u32 ctrl_mode;
+	struct can_clock clock;
+	struct can_bittiming_const bittiming_const;
+	struct can_bittiming_const data_bittiming_const;
+};
+
+struct can_err_report {
+	int device;
+	enum can_state state;
+	struct can_berr_counter err_count;
+};
+
+struct can_dev_settings {
+	int device;
+	struct can_bittiming bittiming;
+	struct can_bittiming data_bittiming;
+	u32 ctrl_mode;
+	bool termination;
 };
 
 static int                      is_open;
@@ -362,13 +393,18 @@ static int intrepid_netdevice_stop(struct net_device *dev)
 	netif_carrier_off(dev);
 	spin_unlock_bh(&ics->lock);
 
+	ics->can.state = CAN_STATE_STOPPED;
+
 	return 0;
 }
 
 static int intrepid_netdevice_open(struct net_device *dev)
 {
+	struct intrepid_netdevice *ics = netdev_priv(dev);
 	netif_start_queue(dev);
 	netif_carrier_on(dev);
+
+	ics->can.state = CAN_STATE_ERROR_ACTIVE;
 	return 0;
 }
 
@@ -421,32 +457,6 @@ static int intrepid_remove_can_if(int index)
 	return 0;
 }
 
-static int intrepid_set_bittiming(struct net_device *netdev)
-{
-	struct intrepid_netdevice *dev = netdev_priv(netdev);
-	struct can_bittiming *bt = &dev->can.bittiming;
-
-	dev_dbg(&netdev->dev, "bitrate %d sample_point %d tq %d sjw %d phase1 %d phase2 %d prop %d brp %d",
-		bt->bitrate, bt->sample_point, bt->tq, bt->sjw, bt->phase_seg1, bt->phase_seg2, bt->prop_seg, bt->brp);
-
-	dev->bitrate_changed = 1;
-	wake_up_interruptible(&tx_wait);
-	return 0;
-}
-
-static int intrepid_set_data_bittiming(struct net_device *netdev)
-{
-	struct intrepid_netdevice *dev = netdev_priv(netdev);
-	struct can_bittiming *bt = &dev->can.data_bittiming;
-
-	dev_dbg(&netdev->dev, "bitrate %d sample_point %d tq %d sjw %d phase1 %d phase2 %d prop %d brp %d",
-		bt->bitrate, bt->sample_point, bt->tq, bt->sjw, bt->phase_seg1, bt->phase_seg2, bt->prop_seg, bt->brp);
-
-	dev->bitrate_changed = 1;
-	wake_up_interruptible(&tx_wait);
-	return 0;
-}
-
 static int intrepid_bitrates[] = {
 	20000,
 	33000,
@@ -483,12 +493,136 @@ static int intrepid_data_bitrates[] = {
 	10000000
 };
 
-static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *requestedName)
+static const u16 intrepid_terminations[] = {
+	0,
+	50
+};
+
+static int intrepid_set_bittiming(struct net_device *netdev)
 {
-	// The `requestedName` parameter is always NULL if KERNEL_SUPPORTS_ALIASES is false
-#if KERNEL_SUPPORTS_ALIASES
+	struct intrepid_netdevice *dev = netdev_priv(netdev);
+	struct can_bittiming *bt = &dev->can.bittiming;
+
+	dev_dbg(&netdev->dev, "bitrate %d sample_point %d tq %d sjw %d phase1 %d phase2 %d prop %d brp %d",
+		bt->bitrate, bt->sample_point, bt->tq, bt->sjw, bt->phase_seg1, bt->phase_seg2, bt->prop_seg, bt->brp);
+
+	dev->bitrate_changed = 1;
+	wake_up_interruptible(&tx_wait);
+	return 0;
+}
+
+static int intrepid_set_data_bittiming(struct net_device *netdev)
+{
+	struct intrepid_netdevice *dev = netdev_priv(netdev);
+	struct can_bittiming *bt = &dev->can.data_bittiming;
+
+	dev_dbg(&netdev->dev, "bitrate %d sample_point %d tq %d sjw %d phase1 %d phase2 %d prop %d brp %d",
+		bt->bitrate, bt->sample_point, bt->tq, bt->sjw, bt->phase_seg1, bt->phase_seg2, bt->prop_seg, bt->brp);
+
+	dev->bitrate_changed = 1;
+	wake_up_interruptible(&tx_wait);
+	return 0;
+}
+
+static int intrepid_set_bittiming_v2(struct net_device *netdev)
+{
+	/* nothing to do, kernel will inform userspace via netlink and the
+	 * daemon will pick up the data from there */
+	return 0;
+}
+
+static int intrepid_set_termination(struct net_device *netdev, u16 termination)
+{
+	/* nothing to do, kernel will inform userspace via netlink and the
+	 * daemon will pick up the data from there */
+	return 0;
+}
+
+static int intrepid_get_berr_counter(const struct net_device *netdev, struct can_berr_counter *bec)
+{
+	struct intrepid_netdevice *dev = netdev_priv(netdev);
+	*bec = dev->berr_counter;
+	return 0;
+}
+
+static int intrepid_handle_err_counts(struct can_err_report *err)
+{
+	struct net_device *netdev = intrepid_get_dev_by_index(err->device);
+	struct intrepid_netdevice *dev = netdev_priv(netdev);
+	struct can_frame *cf;
+	struct sk_buff *skb;
+
+	netdev_info(netdev, "%s: tx_err: %d rx_err: %d, state: %d", __func__,
+		err->err_count.txerr, err->err_count.rxerr, err->state);
+	dev->berr_counter = err->err_count;
+	if (dev->can.state == err->state) {
+		return 0;
+	}
+
+    skb = alloc_can_err_skb(netdev, &cf);
+
+	switch (err->state) {
+	case CAN_STATE_ERROR_WARNING:
+		/* error warning state */
+		dev->can.can_stats.error_warning++;
+		dev->can.state = CAN_STATE_ERROR_WARNING;
+		if (skb) {
+			cf->can_id |= CAN_ERR_CRTL | CAN_ERR_CNT;
+			cf->data[1] = (err->err_count.txerr > err->err_count.rxerr) ?
+				CAN_ERR_CRTL_TX_WARNING :
+				CAN_ERR_CRTL_RX_WARNING;
+			cf->data[6] = err->err_count.txerr;
+			cf->data[7] = err->err_count.rxerr;
+		}
+		break;
+	case CAN_STATE_ERROR_PASSIVE:
+		/* error passive state */
+		dev->can.can_stats.error_passive++;
+		dev->can.state = CAN_STATE_ERROR_PASSIVE;
+		if (skb) {
+			cf->can_id |= CAN_ERR_CRTL | CAN_ERR_CNT;
+			cf->data[1] = (err->err_count.txerr > err->err_count.rxerr) ?
+				CAN_ERR_CRTL_TX_PASSIVE :
+				CAN_ERR_CRTL_RX_PASSIVE;
+			cf->data[6] = err->err_count.txerr;
+			cf->data[7] = err->err_count.rxerr;
+		}
+		break;
+	case CAN_STATE_BUS_OFF:
+		/* bus-off state */
+		dev->can.state = CAN_STATE_BUS_OFF;
+		dev->can.can_stats.bus_off++;
+		can_bus_off(netdev);
+		if (skb)
+			cf->can_id |= CAN_ERR_BUSOFF;
+		break;
+	default:
+		break;
+	}
+
+	if (skb)
+		netif_rx(skb);
+
+	return 0;
+}
+
+static int intrepid_handle_dev_settings(struct can_dev_settings *settings)
+{
+	struct net_device *netdev = intrepid_get_dev_by_index(settings->device);
+	struct intrepid_netdevice *dev = netdev_priv(netdev);
+
+	dev->can.bittiming = settings->bittiming;
+	if (settings->data_bittiming.bitrate != 0)
+		dev->can.data_bittiming = settings->data_bittiming;
+	dev->can.ctrlmode = settings->ctrl_mode;
+	dev->can.termination = intrepid_terminations[settings->termination?1:0];
+
+	return 0;
+}
+
+static int intrepid_add_can_if(struct intrepid_netdevice **result, struct add_can_if_info *info)
+{
 	size_t aliasLen = 0;
-#endif
 	int i;
 	int ret = -EPERM;
 	struct net_device *dev = NULL;
@@ -522,13 +656,13 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	dev->mtu                = CANFD_MTU; /* TODO: Check CAN-FD support from usermode daemon */
 	dev->netdev_ops         = &intrepid_CAN_netdevice_ops;
 #if KERNEL_SUPPORTS_ALIASES
-	if (requestedName && ((aliasLen = strlen(requestedName)) > 0) && aliasLen < IFALIASZ) {
+	if (((aliasLen = strlen(info->alias)) > 0) && aliasLen < IFALIASZ) {
 		dev->ifalias = kzalloc(sizeof(struct dev_ifalias) + aliasLen + 1, GFP_KERNEL);
 		if (dev->ifalias == NULL) {
 			pr_alert("intrepid: Could not allocate space for ifalias %zu\n", sizeof(struct dev_ifalias));
 		} else {
-			strncpy(dev->ifalias->ifalias, requestedName, aliasLen + 1);
-			pr_info("intrepid: %s alias set to %s\n", dev->name, requestedName);
+			strncpy(dev->ifalias->ifalias, info->alias, aliasLen + 1);
+			pr_info("intrepid: %s alias set to %s\n", dev->name, info->alias);
 		}
 	}
 #endif
@@ -538,16 +672,33 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	ics->from_user       = GET_RX_BOX(i); /* incoming rx messages */
 	ics->tx_idx          = 0;
 
-	if (VER_MIN_FROM_INT(client_version) > 1) {
+	if (VER_MIN_FROM_INT(client_version) > 2 && info->clock.freq) {
+		// client sent bittiming information
+		ics->bittiming_const = info->bittiming_const;
+		ics->data_bittiming_const = info->data_bittiming_const;
+		ics->can.clock.freq = info->clock.freq;
+		ics->can.bittiming_const = &ics->bittiming_const;
+		ics->can.data_bittiming_const = &ics->data_bittiming_const;
+		ics->can.termination_const = intrepid_terminations;
+		ics->can.termination_const_cnt = ARRAY_SIZE(intrepid_terminations);
+		ics->can.ctrlmode_supported = info->ctrl_mode;;
+
+		ics->can.do_set_termination = intrepid_set_termination;
+		ics->can.do_set_bittiming = intrepid_set_bittiming_v2;
+		ics->can.do_set_data_bittiming = intrepid_set_bittiming_v2;
+		ics->can.do_get_berr_counter = intrepid_get_berr_counter;
+	} else if (VER_MIN_FROM_INT(client_version) > 1) {
+		// no bittiming information, set static bitrates
 		ics->can.bitrate_const = intrepid_bitrates;
 		ics->can.bitrate_const_cnt = ARRAY_SIZE(intrepid_bitrates);
 		ics->can.data_bitrate_const = intrepid_data_bitrates;
 		ics->can.data_bitrate_const_cnt = ARRAY_SIZE(intrepid_data_bitrates);
 		ics->can.do_set_bittiming = intrepid_set_bittiming;
 		ics->can.do_set_data_bittiming = intrepid_set_data_bittiming;
+		ics->can.ctrlmode_supported |= CAN_CTRLMODE_FD;
+	} else {
+		ics->can.ctrlmode_supported |= CAN_CTRLMODE_FD;
 	}
-	ics->can.state = CAN_STATE_ERROR_ACTIVE;
-	ics->can.ctrlmode_supported = CAN_CTRLMODE_FD;
 
 	spin_lock_init(&ics->lock);
 
@@ -1003,20 +1154,31 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 	switch(cmd) {
 		case SIOCSADDCANIF: {
 			struct intrepid_netdevice *result = NULL;
+			struct add_can_if_info info = {};
+			if (VER_MIN_FROM_INT(client_version) < 3) {
 #if KERNEL_SUPPORTS_ALIASES
-			char requestedNameBuffer[IFALIASZ] = {0};
-			char* requestedName = NULL;
-			int bytesNotCopied = 0;
-			if ((void __user*)arg != NULL) {
-				bytesNotCopied = copy_from_user(requestedNameBuffer, (void __user*)arg, IFALIASZ);
-				if (bytesNotCopied != 0)
-					pr_warn("intrepid: %d bytes not copied for alias", bytesNotCopied);
-				requestedName = requestedNameBuffer;
-			}
-			ret = intrepid_add_can_if(&result, requestedName);
-#else
-			ret = intrepid_add_can_if(&result, NULL);
+				if ((void __user*)arg != NULL) {
+					if (copy_from_user(info.alias, (void __user*)arg, IFALIASZ) != 0)
+						pr_warn("intrepid: Unabe to copy alias");
+				}
 #endif
+			} else {
+				if ((void __user*)arg == NULL) {
+					ret = -EINVAL;
+					break;
+				}
+				if (copy_from_user(&info, (void __user*)arg, sizeof(info)) != 0) {
+					pr_warn("intrepid: Unable to copy data");
+					ret = -EINVAL;
+					break;
+				}
+				if (info.magic != ICS_MAGIC) {
+					pr_warn("intrepid: Invalid data");
+					ret = -EINVAL;
+					break;
+				}
+			}
+			ret = intrepid_add_can_if(&result, &info);
 			break;
 		}
 		case SIOCSREMOVECANIF:
@@ -1036,6 +1198,31 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 			struct intrepid_netdevice *ics = netdev_priv(device);
 			ics->can.bittiming.bitrate = info.baudrates[0];
 			ics->can.data_bittiming.bitrate = info.baudrates[1];
+			break;
+		}
+		case SIOCGIFINDEX: {
+			struct net_device *device = intrepid_get_dev_by_index(arg);
+			if (! device) {
+				ret = -ENODEV;
+				break;
+			}
+			ret = device->ifindex;
+			break;
+		}
+		case SIOCSERRCOUNT: {
+			struct can_err_report err;
+			ret = copy_from_user(&err, (void __user*)arg, sizeof(err));
+			if (ret)
+				break;
+			ret = intrepid_handle_err_counts(&err);
+			break;
+		}
+		case SIOCSIFSETTINGS: {
+			struct can_dev_settings settings;
+			ret = copy_from_user(&settings, (void __user*)arg, sizeof(settings));
+			if (ret)
+				break;
+			ret = intrepid_handle_dev_settings(&settings);
 			break;
 		}
 		case SIOCSADDETHIF: {
