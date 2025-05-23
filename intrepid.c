@@ -70,6 +70,7 @@ MODULE_DESCRIPTION(KO_DESC);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Paul Hollinsky <phollinsky@intrepidcs.com>");
 MODULE_AUTHOR("Jeffrey Quesnelle <jeffq@intrepidcs.com>");
+MODULE_AUTHOR("Kyle Schwarz <kschwarz@intrepidcs.com>");
 MODULE_VERSION(KO_VERSION);
 
 #define INTREPID_DEVICE_NAME            "intrepid_netdevice"
@@ -319,7 +320,7 @@ static netdev_tx_t intrepid_ETH_netdevice_xmit(struct sk_buff *skb, struct net_d
 		intrepid_unpause_all_queues();
 	}
 
-	msg.length = skb->len - ETH_HLEN;
+	msg.length = skb->len;
 	msg.netid = dev->base_addr;
 	msg.type = ICSNEO_NETWORK_TYPE_ETHERNET;
 
@@ -337,7 +338,7 @@ static netdev_tx_t intrepid_ETH_netdevice_xmit(struct sk_buff *skb, struct net_d
 	/* Copy the message into the usermode box */
 	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], &msg, sizeof(neomessage_eth_t));
 	tx_box_bytes[current_tx_box] += sizeof(neomessage_eth_t);
-	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], skb->data, skb->len - ETH_HLEN);
+	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], skb->data, skb->len);
 	tx_box_bytes[current_tx_box] += msg.length;
 	tx_box_count[current_tx_box]++;
 
@@ -696,7 +697,6 @@ static bool handle_CAN_transmit_receipt(
 }
 
 static bool handle_ETH_transmit_receipt(
-	struct net_device *device,
 	const neomessage_eth_t *msg,
 	const uint8_t *data,
 	struct net_device_stats *stats)
@@ -782,7 +782,8 @@ static int intrepid_add_eth_if(struct intrepid_netdevice **result, const char *r
 	}
 
 	dev->base_addr = i;
-	dev->flags = IFF_ECHO;
+	dev->flags |= IFF_BROADCAST | IFF_MULTICAST | IFF_RUNNING;
+	dev->operstate = IF_OPER_UP;
 #if KERNEL_CHECKS_MTU_RANGE
 	dev->min_mtu = ETH_MIN_MTU;
 	dev->max_mtu = ETH_MAX_MTU;
@@ -801,6 +802,8 @@ static int intrepid_add_eth_if(struct intrepid_netdevice **result, const char *r
 		}
 	}
 #endif
+	eth_hw_addr_random(dev);
+
 	ics = netdev_priv(dev);
 	ics->dev = dev;
 	ics->is_stopped = 0;
@@ -831,27 +834,20 @@ static int intrepid_fill_eth_frame_from_neomessage(
 	struct net_device_stats *stats,
 	const neomessage_eth_t *msg,
 	const uint8_t *data,
-	struct sk_buff *skb,
-	struct net_device *device)
+	struct sk_buff *skb)
 {
-	struct ethhdr *eth;
 	if (unlikely(msg->length > (ETH_FRAME_LEN + ETH_FCS_LEN))) {
 		stats->rx_dropped++;
-		pr_warn("intrepid: Dropping message on %s, invalid message length %ld", device->name, msg->length);
-		return 1;
+		return -1;
 	}
 
 	if (unlikely(skb == NULL)) {
 		stats->rx_dropped++;
-		pr_warn("intrepid: Dropping message on %s, skb allocation failed", device->name);
-		return 1;
+		return -1;
 	}
 
-	skb_reset_mac_header(skb);
-	eth = skb_put(skb, sizeof(struct ethhdr));
-	*eth = *(struct ethhdr*)data;
-	skb->protocol = htons(ETH_P_802_3);
-	skb_put_data(skb, data + ETH_HLEN, msg->length);
+	skb_put_data(skb, data, msg->length);
+	skb->protocol = eth_type_trans(skb, skb->dev);
 	stats->rx_bytes += msg->length;
 	stats->rx_packets++;
 
@@ -919,20 +915,16 @@ static struct sk_buff *intrepid_skb_from_neomessage(
 		case ICSNEO_NETWORK_TYPE_ETHERNET:
 			{
 				const neomessage_eth_t *msg = (const neomessage_eth_t*)msg_generic;
-				if (handle_ETH_transmit_receipt(device, msg, data, stats))
+				if (handle_ETH_transmit_receipt(msg, data, stats))
 					goto out;
-				skb = netdev_alloc_skb(device, ETH_DATA_LEN);
+				skb = netdev_alloc_skb_ip_align(device, msg->length);
 				if (unlikely(skb == NULL)) {
 					stats->rx_dropped++;
 					pr_warn("intrepid: Dropping message on %s, skb allocation failed", device->name);
 					goto out;
 				}
-				ret = intrepid_fill_eth_frame_from_neomessage(
-					stats,
-					msg,
-					data,
-					skb,
-					device);
+
+				ret = intrepid_fill_eth_frame_from_neomessage(stats, msg, data, skb);
 			}
 			break;
 		default:
