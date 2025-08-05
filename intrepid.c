@@ -219,7 +219,7 @@ static netdev_tx_t intrepid_CAN_netdevice_xmit(struct sk_buff *skb, struct net_d
 	neomessage_can_t msg = {0};
 
 	if (can_dropped_invalid_skb(dev, skb)) {
-		pr_info("intrepid: dropping invalid frame on %s\n", dev->name);
+		pr_debug("intrepid: dropping invalid frame on %s\n", dev->name);
 		goto exit;
 	}
 
@@ -798,7 +798,7 @@ static int intrepid_add_eth_if(struct intrepid_netdevice **result, const char *r
 		}
 		else {
 			strncpy(dev->ifalias->ifalias, requestedName, aliasLen + 1);
-			pr_info("intrepid: %s alias sset to %s\n", dev->name, requestedName);
+			pr_info("intrepid: %s alias set to %s\n", dev->name, requestedName);
 		}
 	}
 #endif
@@ -866,7 +866,7 @@ static struct sk_buff *intrepid_skb_from_neomessage(
 	/* input validation */
 	if (unlikely(device == NULL || msg_generic == NULL || data == NULL || stats == NULL)) {
 		stats->rx_dropped++;
-		pr_warn("intrepid: Dropping message on %s, skb from neomessage input validation failed", device->name);
+		pr_debug("intrepid: Dropping message on %s, skb from neomessage input validation failed", device->name);
 		goto out;
 	}
 	switch (msg_generic->type) {
@@ -928,12 +928,12 @@ static struct sk_buff *intrepid_skb_from_neomessage(
 			}
 			break;
 		default:
-			pr_warn("intrepid: Dropping message on %s, invalid type %d", device->name, msg_generic->type);
+			pr_debug("intrepid: Dropping message on %s, invalid type %d", device->name, msg_generic->type);
 			goto out;
 		}
 
 	if (unlikely(ret != 0)) {
-		pr_warn("intrepid: Dropping message on %s, frame fill failed", device->name);
+		pr_debug("intrepid: Dropping message on %s, frame fill failed", device->name);
 		goto out;
 	}
 out:
@@ -977,7 +977,7 @@ static int intrepid_read_messages(int device_index, unsigned int count)
 			ret = netif_rx(skb);
 
 		if (ret == NET_RX_DROP)
-			pr_warn("intrepid: Dropping message on %s, dropped by kernel", device->name);
+			pr_debug("intrepid: Dropping message on %s, dropped by kernel", device->name);
 	}
 
 	spin_unlock_bh(&ics->lock);
