@@ -71,6 +71,7 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Paul Hollinsky <phollinsky@intrepidcs.com>");
 MODULE_AUTHOR("Jeffrey Quesnelle <jeffq@intrepidcs.com>");
 MODULE_AUTHOR("Kyle Schwarz <kschwarz@intrepidcs.com>");
+MODULE_AUTHOR("Thomas Stoddard <tstoddard@intrepidcs.com>");
 MODULE_VERSION(KO_VERSION);
 
 #define INTREPID_DEVICE_NAME            "intrepid_netdevice"

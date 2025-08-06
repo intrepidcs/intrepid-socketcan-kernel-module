@@ -45,3 +45,50 @@ can_raw
 can_dev
 intrepid
 ```
+
+## Dynamic Debug Support
+
+The module includes debug messages that can be enabled at runtime using the kernel's dynamic debug framework. This requires your kernel to be built with `CONFIG_DYNAMIC_DEBUG=y` (most modern distributions include this).
+
+### Enabling Debug Messages
+
+After building and loading the module with the standard `make` and `make install`, you can enable debug output:
+
+**Enable all debug messages for the intrepid module:**
+```bash
+$ echo "module intrepid +p" | sudo tee /sys/kernel/debug/dynamic_debug/control
+```
+
+**Disable debug messages:**
+```bash
+$ echo "module intrepid -p" | sudo tee /sys/kernel/debug/dynamic_debug/control
+```
+
+**Enable debug messages for specific functions:**
+```bash
+$ echo "file intrepid.c func function_name +p" | sudo tee /sys/kernel/debug/dynamic_debug/control
+```
+
+**View current debug settings:**
+```bash
+$ sudo cat /sys/kernel/debug/dynamic_debug/control | grep intrepid
+```
+
+**View debug output:**
+```bash
+$ sudo dmesg | grep intrepid
+$ sudo dmesg -w  # Follow live output
+```
+
+### Available Debug Messages
+
+The debug messages provide information about:
+- CAN bittiming configuration
+- Frame validation and processing
+- Message dropping conditions
+- Error handling
+
+Debug messages are primarily triggered during:
+- CAN interface configuration
+- Frame transmission/reception
+- Error conditions and message drops
