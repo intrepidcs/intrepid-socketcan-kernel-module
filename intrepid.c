@@ -99,6 +99,7 @@ MODULE_VERSION(KO_VERSION);
 #define KERNEL_SUPPORTS_ALIASES         (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
 #define KERNEL_DEFINES_VM_FAULT_T       (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
 #define KERNEL_CAN_ECHO_TRACKS_LEN      (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0))
+#define KERNEL_CAN_PRIV_FD              (LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0))
 
 #if KERNEL_DEFINES_VM_FAULT_T == 0
 typedef int vm_fault_t;
@@ -439,7 +440,11 @@ static int intrepid_set_bittiming(struct net_device *netdev)
 static int intrepid_set_data_bittiming(struct net_device *netdev)
 {
 	struct intrepid_netdevice *dev = netdev_priv(netdev);
+#if KERNEL_CAN_PRIV_FD
+	struct can_bittiming *bt = &dev->can.fd.data_bittiming;
+#else
 	struct can_bittiming *bt = &dev->can.data_bittiming;
+#endif
 
 	dev_dbg(&netdev->dev, "bitrate %d sample_point %d tq %d sjw %d phase1 %d phase2 %d prop %d brp %d",
 		bt->bitrate, bt->sample_point, bt->tq, bt->sjw, bt->phase_seg1, bt->phase_seg2, bt->prop_seg, bt->brp);
@@ -543,10 +548,16 @@ static int intrepid_add_can_if(struct intrepid_netdevice **result, const char *r
 	if (VER_MIN_FROM_INT(client_version) > 1) {
 		ics->can.bitrate_const = intrepid_bitrates;
 		ics->can.bitrate_const_cnt = ARRAY_SIZE(intrepid_bitrates);
+		ics->can.do_set_bittiming = intrepid_set_bittiming;
+#if KERNEL_CAN_PRIV_FD
+		ics->can.fd.data_bitrate_const = intrepid_data_bitrates;
+		ics->can.fd.data_bitrate_const_cnt = ARRAY_SIZE(intrepid_data_bitrates);
+		ics->can.fd.do_set_data_bittiming = intrepid_set_data_bittiming;
+#else
 		ics->can.data_bitrate_const = intrepid_data_bitrates;
 		ics->can.data_bitrate_const_cnt = ARRAY_SIZE(intrepid_data_bitrates);
-		ics->can.do_set_bittiming = intrepid_set_bittiming;
 		ics->can.do_set_data_bittiming = intrepid_set_data_bittiming;
+#endif
 	}
 	ics->can.state = CAN_STATE_ERROR_ACTIVE;
 	ics->can.ctrlmode_supported = CAN_CTRLMODE_FD;
@@ -1028,7 +1039,11 @@ static long intrepid_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 				break;
 			struct intrepid_netdevice *ics = netdev_priv(device);
 			ics->can.bittiming.bitrate = info.baudrates[0];
+#if KERNEL_CAN_PRIV_FD
+			ics->can.fd.data_bittiming.bitrate = info.baudrates[1];
+#else
 			ics->can.data_bittiming.bitrate = info.baudrates[1];
+#endif
 			break;
 		}
 		case SIOCSADDETHIF: {
@@ -1158,7 +1173,11 @@ static int check_bitrate_change(struct intrepid_pending_tx_info *info)
 		if (ics->bitrate_changed) {
 			info->tx_box_index = -(i + 1);
 			info->count = ics->can.bittiming.bitrate;
+#if KERNEL_CAN_PRIV_FD
+			info->bytes = ics->can.fd.data_bittiming.bitrate;
+#else
 			info->bytes = ics->can.data_bittiming.bitrate;
+#endif
 			ics->bitrate_changed = 0;
 			return 1;
 		}
