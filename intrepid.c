@@ -216,7 +216,6 @@ static netdev_tx_t intrepid_CAN_netdevice_xmit(struct sk_buff *skb, struct net_d
 	struct canfd_frame *cf = (struct canfd_frame*)skb->data;
 	bool fd = can_is_canfd_skb(skb);
 	bool needs_unlock = false;
-	bool consumed = false;
 	int tx_idx;
 	neomessage_can_t msg = {0};
 
@@ -280,7 +279,6 @@ static netdev_tx_t intrepid_CAN_netdevice_xmit(struct sk_buff *skb, struct net_d
 		, msg.length
 #endif
 	);
-	consumed = true;
 
 	/* Copy the message into the usermode box */
 	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], &msg, sizeof(neomessage_can_t));
@@ -293,8 +291,7 @@ static netdev_tx_t intrepid_CAN_netdevice_xmit(struct sk_buff *skb, struct net_d
 	if (intrepid_tx_box_no_space_for(sizeof(neomessage_can_t) + CANFD_MTU))
 		intrepid_pause_all_queues();
 exit:
-	if (ret == NETDEV_TX_OK && !consumed)
-		consume_skb(skb);
+	dev_kfree_skb(skb);
 	wake_up_interruptible(&tx_wait);
 	if (needs_unlock)
 		spin_unlock_bh(&tx_box_lock);
@@ -305,7 +302,6 @@ static netdev_tx_t intrepid_ETH_netdevice_xmit(struct sk_buff *skb, struct net_d
 	int ret = NETDEV_TX_OK;
 	struct intrepid_netdevice *ics = netdev_priv(dev);
 	bool needs_unlock = false;
-	bool consumed = false;
 	int tx_idx;
 	neomessage_eth_t msg = {0};
 
@@ -335,7 +331,6 @@ static netdev_tx_t intrepid_ETH_netdevice_xmit(struct sk_buff *skb, struct net_d
 		goto exit;
 	}
 	msg.description = intrepid_next_tx_description(ics, &tx_idx);
-	consumed = true;
 
 	/* Copy the message into the usermode box */
 	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], &msg, sizeof(neomessage_eth_t));
@@ -348,8 +343,7 @@ static netdev_tx_t intrepid_ETH_netdevice_xmit(struct sk_buff *skb, struct net_d
 	if (intrepid_tx_box_no_space_for(sizeof(neomessage_eth_t) + ETH_DATA_LEN))
 		intrepid_pause_all_queues();
 exit:
-	if (ret == NETDEV_TX_OK && !consumed)
-		consume_skb(skb);
+	dev_kfree_skb(skb);
 	wake_up_interruptible(&tx_wait);
 	if (needs_unlock)
 		spin_unlock_bh(&tx_box_lock);
