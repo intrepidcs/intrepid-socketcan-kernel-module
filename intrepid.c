@@ -66,6 +66,15 @@
 #define VER_MIN_FROM_INT(VERINT) ((VERINT >> 8) & 0xFF)
 #define VER_PATCH_FROM_INT(VERINT) (VERINT & 0xFF)
 
+#define RX_BOX_SIZE (SHARED_MEM_SIZE / (MAX_NET_DEVICES * 2))
+#define TX_BOX_SIZE (SHARED_MEM_SIZE / 4)
+#define GET_RX_BOX(DEVICE_INDEX) \
+	(shared_mem + (RX_BOX_SIZE * DEVICE_INDEX))
+#define GET_TX_BOX(BOX_INDEX) \
+	(shared_mem + (SHARED_MEM_SIZE / 2) + (BOX_INDEX * TX_BOX_SIZE))
+#define MAX_TX (0x100)
+#define DESC_OFFSET (2)
+
 MODULE_DESCRIPTION(KO_DESC);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Paul Hollinsky <phollinsky@intrepidcs.com>");
@@ -119,6 +128,7 @@ struct intrepid_netdevice {
 	unsigned char           *from_user;
 	uint8_t                 tx_idx;
 	int			bitrate_changed;
+	struct sk_buff          *tx_skbs[MAX_TX];
 };
 
 static int                      is_open;
@@ -136,15 +146,6 @@ static int                      current_tx_box;
 static int                      tx_box_count[2];
 static size_t                   tx_box_bytes[2];
 static spinlock_t               tx_box_lock;
-
-#define RX_BOX_SIZE (SHARED_MEM_SIZE / (MAX_NET_DEVICES * 2))
-#define TX_BOX_SIZE (SHARED_MEM_SIZE / 4)
-#define GET_RX_BOX(DEVICE_INDEX) \
-	(shared_mem + (RX_BOX_SIZE * DEVICE_INDEX))
-#define GET_TX_BOX(BOX_INDEX) \
-	(shared_mem + (SHARED_MEM_SIZE / 2) + (BOX_INDEX * TX_BOX_SIZE))
-#define MAX_TX (0x100)
-#define DESC_OFFSET (2)
 
 static uint16_t intrepid_next_tx_description(
 	struct intrepid_netdevice* ics,
@@ -256,6 +257,7 @@ static netdev_tx_t intrepid_CAN_netdevice_xmit(struct sk_buff *skb, struct net_d
 	if (cf->can_id & CAN_RTR_FLAG) {
 		if (unlikely(fd)) {
 			pr_info("intrepid: tried to send RTR frame on CANFD %s\n", dev->name);
+			kfree_skb(skb);
 			goto exit;
 		}
 		msg.status.remoteFrame = true;
@@ -291,7 +293,6 @@ static netdev_tx_t intrepid_CAN_netdevice_xmit(struct sk_buff *skb, struct net_d
 	if (intrepid_tx_box_no_space_for(sizeof(neomessage_can_t) + CANFD_MTU))
 		intrepid_pause_all_queues();
 exit:
-	dev_kfree_skb(skb);
 	wake_up_interruptible(&tx_wait);
 	if (needs_unlock)
 		spin_unlock_bh(&tx_box_lock);
@@ -331,6 +332,11 @@ static netdev_tx_t intrepid_ETH_netdevice_xmit(struct sk_buff *skb, struct net_d
 		goto exit;
 	}
 	msg.description = intrepid_next_tx_description(ics, &tx_idx);
+	if (ics->tx_skbs[tx_idx]) {
+		kfree_skb(ics->tx_skbs[tx_idx]);
+		++dev->stats.tx_dropped;
+	}
+	ics->tx_skbs[tx_idx] = skb;
 
 	/* Copy the message into the usermode box */
 	memcpy(tx_boxes[current_tx_box] + tx_box_bytes[current_tx_box], &msg, sizeof(neomessage_eth_t));
@@ -343,7 +349,6 @@ static netdev_tx_t intrepid_ETH_netdevice_xmit(struct sk_buff *skb, struct net_d
 	if (intrepid_tx_box_no_space_for(sizeof(neomessage_eth_t) + ETH_DATA_LEN))
 		intrepid_pause_all_queues();
 exit:
-	dev_kfree_skb(skb);
 	wake_up_interruptible(&tx_wait);
 	if (needs_unlock)
 		spin_unlock_bh(&tx_box_lock);
@@ -703,10 +708,12 @@ static bool handle_CAN_transmit_receipt(
 }
 
 static bool handle_ETH_transmit_receipt(
+	struct net_device *device,
 	const neomessage_eth_t *msg,
 	const uint8_t *data,
 	struct net_device_stats *stats)
 {
+	struct intrepid_netdevice *ics = netdev_priv(device);
 	int tx_idx;
 
 	if (!msg->status.transmitMessage) {
@@ -722,10 +729,13 @@ static bool handle_ETH_transmit_receipt(
 
 	/* unsuccessful transmits */
 	if (msg->status.globalError) {
-		struct sk_buff *skb;
-		kfree_skb(&skb[tx_idx]);
+		kfree_skb(ics->tx_skbs[tx_idx]);
+		ics->tx_skbs[tx_idx] = NULL;
 		return false;
 	}
+
+	dev_kfree_skb(ics->tx_skbs[tx_idx]);
+	ics->tx_skbs[tx_idx] = NULL;
 
 	stats->tx_packets++;
 	stats->tx_bytes += msg->length;
@@ -743,6 +753,14 @@ static int intrepid_remove_eth_if(int index)
 		pr_warn("intrepid: Index of device %ld does not match given index %d\n", device->base_addr, index);
 
 	pr_info("intrepid: Removing device %d %s 0x%p\n", index, device->name, device);
+
+	struct intrepid_netdevice *ics = netdev_priv(device);
+
+	for (size_t i = 0; i < MAX_TX; ++i) {
+		if (ics->tx_skbs[i]) {
+			kfree_skb(ics->tx_skbs[i]);
+		}
+	}
 
 	unregister_netdev(device);
 
@@ -921,7 +939,7 @@ static struct sk_buff *intrepid_skb_from_neomessage(
 		case ICSNEO_NETWORK_TYPE_ETHERNET:
 			{
 				const neomessage_eth_t *msg = (const neomessage_eth_t*)msg_generic;
-				if (handle_ETH_transmit_receipt(msg, data, stats))
+				if (handle_ETH_transmit_receipt(device, msg, data, stats))
 					goto out;
 				skb = netdev_alloc_skb_ip_align(device, msg->length);
 				if (unlikely(skb == NULL)) {
