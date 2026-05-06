@@ -416,6 +416,8 @@ static int intrepid_remove_can_if(int index)
 
 	unregister_candev(device);
 
+	free_candev(device);
+
 	net_devices[index] = NULL;
 
 	pr_info("intrepid: Removed device %d\n", index);
@@ -763,6 +765,8 @@ static int intrepid_remove_eth_if(int index)
 	}
 
 	unregister_netdev(device);
+
+	free_netdev(device);
 
 	net_devices[index] = NULL;
 
